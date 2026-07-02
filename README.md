@@ -2,7 +2,7 @@
 
 SealKey is a lightweight FLTK desktop helper for the local `gpg` executable.
 
-Version 0.1 provides:
+Version 0.2 provides:
 
 - a C++20/CMake project structure;
 - an FLTK application named `sealkey`;
@@ -13,7 +13,12 @@ Version 0.1 provides:
 - public and secret key listing via `--with-colons`;
 - separate encryption and signing key selections by full fingerprint;
 - ASCII-armored public-key export for the selected encryption key;
-- last-used open/save/export directories.
+- last-used open/save/export directories;
+- text encryption through `gpg --armor --encrypt --recipient <FINGERPRINT>`;
+- text decryption through `gpg --decrypt`;
+- clear text signing through `gpg --clearsign --local-user <FINGERPRINT>`;
+- signed text verification through `gpg --verify`;
+- text result copy, clearing and save-to-file.
 
 The application calls `gpg` as an external process and passes arguments as a vector. It does not use Qt, wxWidgets, GTK, Electron, libgpgme or OpenSSL, and it does not store passphrases or secrets.
 
@@ -47,6 +52,8 @@ SealKey stores only non-sensitive preferences:
 
 Stored values include window geometry, selected `gpg` executable, selected full fingerprints and last-used directories.
 
-## v0.1 Limits
+## Current Limits
 
-The Texte and Fichiers tabs are present but intentionally inactive. Text encryption/decryption, file encryption/decryption, signing and verification are planned for later versions after v0.1 is stable and documented.
+The Fichiers tab is present but intentionally inactive. File encryption/decryption, detached file signing and file signature verification are planned for later versions.
+
+Text operations use stdin/stdout and do not store source text, encrypted text, signatures, passphrases or operation outputs in preferences. The Journal tab records only short operation status messages.

@@ -5,6 +5,7 @@
 #include <iostream>
 
 void runKeyParserTests();
+void runGpgArgumentTests();
 
 namespace {
 void testIniParsing() {
@@ -40,6 +41,7 @@ int main() {
     testIniParsing();
     testIniSerialization();
     runKeyParserTests();
+    runGpgArgumentTests();
     std::cout << "sealkey_tests passed\n";
     return 0;
 }

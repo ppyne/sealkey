@@ -1,11 +1,15 @@
 #include "MainWindow.hpp"
 
 #include "AppInfo.hpp"
+#include "CryptoService.hpp"
 #include "GpgExecutable.hpp"
 #include "KeyStore.hpp"
+#include "SignatureService.hpp"
 
+#include <FL/Fl.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
+#include <FL/Fl_Choice.H>
 #include <FL/Fl_Group.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Input.H>
@@ -14,10 +18,13 @@
 #include <FL/Fl_Tabs.H>
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Text_Display.H>
+#include <FL/Fl_Text_Editor.H>
 #include <FL/fl_ask.H>
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -73,6 +80,29 @@ bool directoryExists(const std::string& path) {
     std::error_code ec;
     return std::filesystem::exists(path, ec) && std::filesystem::is_directory(path, ec);
 }
+
+std::string bufferText(Fl_Text_Buffer* buffer) {
+    if (!buffer) {
+        return {};
+    }
+    char* raw = buffer->text();
+    if (!raw) {
+        return {};
+    }
+    std::string text(raw);
+    std::free(raw);
+    return text;
+}
+
+std::string diagnosticText(const GpgProcessResult& result) {
+    if (!result.errorMessage.empty()) {
+        return result.errorMessage;
+    }
+    if (!result.standardError.empty()) {
+        return result.standardError;
+    }
+    return result.standardOutput;
+}
 }
 
 MainWindow::MainWindow()
@@ -83,6 +113,8 @@ MainWindow::MainWindow()
 }
 
 MainWindow::~MainWindow() {
+    delete textSourceBuffer_;
+    delete textResultBuffer_;
     delete logBuffer_;
 }
 
@@ -148,8 +180,36 @@ void MainWindow::buildInterface() {
 
     textTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Texte");
     textTab_->begin();
-    new Fl_Box(textTab_->x() + Margin, textTab_->y() + Margin, 360, RowHeight, "Fonctions texte prévues en version 0.2");
-    textTab_->deactivate();
+    x = textTab_->x() + Margin;
+    y = textTab_->y() + Margin;
+    contentWidth = textTab_->w() - Margin * 2;
+    textOperationChoice_ = new Fl_Choice(x, y, 150, RowHeight, "Opération");
+    textOperationChoice_->add("Chiffrer");
+    textOperationChoice_->add("Déchiffrer");
+    textOperationChoice_->add("Signer");
+    textOperationChoice_->add("Vérifier");
+    textOperationChoice_->value(0);
+    auto executeTextButton = new Fl_Button(x + 230, y, 100, RowHeight, "Exécuter");
+    executeTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeTextOperation(); }, this);
+    auto copyTextButton = new Fl_Button(executeTextButton->x() + executeTextButton->w() + 8, y, 130, RowHeight, "Copier résultat");
+    copyTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->copyTextResult(); }, this);
+    auto clearTextButton = new Fl_Button(copyTextButton->x() + copyTextButton->w() + 8, y, 80, RowHeight, "Effacer");
+    clearTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->clearTextBuffers(); }, this);
+    auto saveTextButton = new Fl_Button(clearTextButton->x() + clearTextButton->w() + 8, y, 150, RowHeight, "Enregistrer résultat");
+    saveTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->saveTextResult(); }, this);
+    y += RowHeight + 12;
+    int editorHeight = (textTab_->h() - y + textTab_->y() - Margin * 2 - 28) / 2;
+    new Fl_Box(x, y, 80, RowHeight, "Source");
+    y += RowHeight;
+    textSourceBuffer_ = new Fl_Text_Buffer();
+    textSourceEditor_ = new Fl_Text_Editor(x, y, contentWidth, editorHeight);
+    textSourceEditor_->buffer(textSourceBuffer_);
+    y += editorHeight + 10;
+    new Fl_Box(x, y, 80, RowHeight, "Résultat");
+    y += RowHeight;
+    textResultBuffer_ = new Fl_Text_Buffer();
+    textResultDisplay_ = new Fl_Text_Display(x, y, contentWidth, editorHeight);
+    textResultDisplay_->buffer(textResultBuffer_);
     textTab_->end();
 
     filesTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Fichiers");
@@ -334,6 +394,124 @@ void MainWindow::exportEncryptionPublicKey() {
     saveSettings();
     fl_message("Clé publique exportée.");
     appendLog("Clé publique exportée pour " + fingerprint);
+}
+
+void MainWindow::executeTextOperation() {
+    updateGpgPath(gpgPathInput_->value() ? gpgPathInput_->value() : "", true);
+    if (settings_.gpg.executablePath.empty()) {
+        fl_alert("Sélectionnez un exécutable gpg avant d'exécuter une opération texte.");
+        return;
+    }
+
+    std::string source = bufferText(textSourceBuffer_);
+    if (source.empty()) {
+        fl_alert("La zone source est vide.");
+        return;
+    }
+
+    const int operation = textOperationChoice_->value();
+    GpgProcessResult result;
+    std::string operationName;
+    if (operation == 0) {
+        auto fingerprint = selectedEncryptionFingerprint();
+        if (fingerprint.empty()) {
+            fl_alert("Sélectionnez une clé de chiffrement.");
+            return;
+        }
+        operationName = "Chiffrement texte";
+        result = CryptoService(settings_.gpg.executablePath).encryptText(source, fingerprint);
+    } else if (operation == 1) {
+        operationName = "Déchiffrement texte";
+        result = CryptoService(settings_.gpg.executablePath).decryptText(source);
+    } else if (operation == 2) {
+        auto fingerprint = selectedSigningFingerprint();
+        if (fingerprint.empty()) {
+            fl_alert("Sélectionnez une clé de signature.");
+            return;
+        }
+        operationName = "Signature texte";
+        result = SignatureService(settings_.gpg.executablePath).signText(source, fingerprint);
+    } else {
+        operationName = "Vérification texte";
+        result = SignatureService(settings_.gpg.executablePath).verifyText(source);
+    }
+
+    if (operation == 3) {
+        std::string diagnostic = diagnosticText(result);
+        std::string message = result.success()
+                                  ? "Signature valide.\n\n"
+                                  : "Signature invalide ou non vérifiable.\n\n";
+        textResultBuffer_->text((message + diagnostic).c_str());
+    } else if (result.success()) {
+        textResultBuffer_->text(result.standardOutput.c_str());
+    } else {
+        auto diagnostic = diagnosticText(result);
+        textResultBuffer_->text(diagnostic.empty() ? "L'opération GPG a échoué." : diagnostic.c_str());
+    }
+
+    if (result.success()) {
+        appendLog(operationName + " réussi.");
+    } else {
+        std::ostringstream message;
+        message << operationName << " échoué";
+        if (result.exitCode >= 0) {
+            message << " (code " << result.exitCode << ")";
+        }
+        message << ".";
+        appendLog(message.str());
+    }
+}
+
+void MainWindow::copyTextResult() {
+    auto result = bufferText(textResultBuffer_);
+    if (result.empty()) {
+        fl_alert("Aucun résultat à copier.");
+        return;
+    }
+    Fl::copy(result.c_str(), static_cast<int>(result.size()), 1);
+    appendLog("Résultat texte copié dans le presse-papiers.");
+}
+
+void MainWindow::clearTextBuffers() {
+    textSourceBuffer_->text("");
+    textResultBuffer_->text("");
+    appendLog("Zones texte effacées.");
+}
+
+void MainWindow::saveTextResult() {
+    auto result = bufferText(textResultBuffer_);
+    if (result.empty()) {
+        fl_alert("Aucun résultat à enregistrer.");
+        return;
+    }
+
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Enregistrer le résultat");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
+    chooser.filter("Texte\t*.txt\nASCII armuré\t*.asc\nTous les fichiers\t*");
+    chooser.preset_file("sealkey-result.txt");
+    if (directoryExists(settings_.paths.lastSaveDir)) {
+        chooser.directory(settings_.paths.lastSaveDir.c_str());
+    }
+    if (chooser.show() != 0 || !chooser.filename()) {
+        return;
+    }
+
+    std::ofstream output(chooser.filename(), std::ios::binary | std::ios::trunc);
+    if (!output) {
+        fl_alert("Impossible d'écrire le fichier de destination.");
+        appendLog("Enregistrement du résultat texte échoué.");
+        return;
+    }
+    output << result;
+    if (!output) {
+        fl_alert("Erreur pendant l'écriture du fichier.");
+        appendLog("Enregistrement du résultat texte échoué pendant l'écriture.");
+        return;
+    }
+    settings_.paths.lastSaveDir = directoryOf(chooser.filename());
+    saveSettings();
+    appendLog("Résultat texte enregistré.");
 }
 
 void MainWindow::populateKeyBrowsers() {

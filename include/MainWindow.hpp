@@ -10,6 +10,7 @@
 
 class Fl_Box;
 class Fl_Button;
+class Fl_Choice;
 class Fl_Group;
 class Fl_Hold_Browser;
 class Fl_Input;
@@ -17,6 +18,7 @@ class Fl_Output;
 class Fl_Tabs;
 class Fl_Text_Buffer;
 class Fl_Text_Display;
+class Fl_Text_Editor;
 
 class MainWindow : public Fl_Window {
 public:
@@ -33,6 +35,10 @@ private:
     void testGpg();
     void reloadKeys();
     void exportEncryptionPublicKey();
+    void executeTextOperation();
+    void copyTextResult();
+    void clearTextBuffers();
+    void saveTextResult();
     void populateKeyBrowsers();
     void restoreKeySelections();
     void appendLog(const std::string& message);
@@ -60,6 +66,11 @@ private:
     Fl_Hold_Browser* signingBrowser_ = nullptr;
     Fl_Output* encryptionFingerprintOutput_ = nullptr;
     Fl_Output* signingFingerprintOutput_ = nullptr;
+    Fl_Choice* textOperationChoice_ = nullptr;
+    Fl_Text_Buffer* textSourceBuffer_ = nullptr;
+    Fl_Text_Buffer* textResultBuffer_ = nullptr;
+    Fl_Text_Editor* textSourceEditor_ = nullptr;
+    Fl_Text_Display* textResultDisplay_ = nullptr;
     Fl_Text_Buffer* logBuffer_ = nullptr;
     Fl_Text_Display* logDisplay_ = nullptr;
 };

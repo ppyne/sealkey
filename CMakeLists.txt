@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(sealkey VERSION 0.1.0 LANGUAGES CXX)
+project(sealkey VERSION 0.2.0 LANGUAGES CXX)
 
 option(USE_SYSTEM_FLTK "Use an installed FLTK package" ON)
 option(BUILD_STATIC "Prefer static linking where practical" ON)
@@ -13,11 +13,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(sealkey_core
     src/AppInfo.cpp
+    src/CryptoService.cpp
     src/GpgExecutable.cpp
     src/GpgProcess.cpp
     src/IniFile.cpp
     src/KeyStore.cpp
     src/SettingsService.cpp
+    src/SignatureService.cpp
 )
 
 target_include_directories(sealkey_core PUBLIC include)
@@ -77,6 +79,7 @@ endif()
 if(ENABLE_TESTS)
     enable_testing()
     add_executable(sealkey_tests
+        tests/test_gpg_arguments.cpp
         tests/test_ini.cpp
         tests/test_key_parser.cpp
     )
