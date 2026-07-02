@@ -38,4 +38,22 @@ void runGpgArgumentTests() {
 
     auto verifySignedArgs = SignatureService::verifySignedFileArguments("signed.asc");
     assert((verifySignedArgs == std::vector<std::string>{"--verify", "signed.asc"}));
+
+    GpgProcessResult verification;
+    verification.exitCode = 0;
+    verification.standardError =
+        "gpg: Signature made Thu Jul  2 10:00:00 2026 CEST\n"
+        "gpg:                using EDDSA key 1FD99CF3B9B8641A17FCC08AE88E0BF0E63DDF8D\n"
+        "gpg: Good signature from \"SealKey Test <sealkey@example.test>\" [ultimate]\n"
+        "gpg: Primary key fingerprint: 1FD9 9CF3 B9B8 641A 17FC  C08A E88E 0BF0 E63D DF8D\n";
+    auto summary = SignatureService::summarizeVerification(verification);
+    assert(summary.valid);
+    assert(summary.fingerprint == "1FD99CF3B9B8641A17FCC08AE88E0BF0E63DDF8D");
+
+    GpgProcessResult unknown;
+    unknown.exitCode = 2;
+    unknown.standardError = "gpg: Can't check signature: No public key\n";
+    auto unknownSummary = SignatureService::summarizeVerification(unknown);
+    assert(!unknownSummary.valid);
+    assert(unknownSummary.unknownKey);
 }

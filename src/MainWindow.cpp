@@ -47,7 +47,35 @@ std::string keyLabel(const GpgKey& key) {
     if (key.revoked) {
         label << "  révoquée";
     }
+    if (key.validity != "f" && key.validity != "u") {
+        label << "  confiance limitée";
+    }
     return label.str();
+}
+
+std::string keyWarningText(const GpgKey& key) {
+    std::ostringstream warning;
+    if (key.expired) {
+        warning << "Cette clé est expirée.\n";
+    }
+    if (key.revoked) {
+        warning << "Cette clé est révoquée.\n";
+    }
+    if (key.validity != "f" && key.validity != "u") {
+        warning << "La confiance de cette clé n'est pas pleinement établie.\n";
+    }
+    return warning.str();
+}
+
+std::string keyDetailText(const GpgKey& key, const std::string& emptyText) {
+    if (key.fingerprint.empty()) {
+        return emptyText;
+    }
+    auto warnings = keyWarningText(key);
+    if (warnings.empty()) {
+        return key.fingerprint;
+    }
+    return key.fingerprint + "  -  " + warnings.substr(0, warnings.find('\n'));
 }
 
 std::string currentTimestamp() {
@@ -129,6 +157,28 @@ std::string diagnosticText(const GpgProcessResult& result) {
     }
     return result.standardOutput;
 }
+
+bool windowLooksVisible(int x, int y, int width, int height) {
+    if (x < 0 || y < 0 || width <= 0 || height <= 0) {
+        return false;
+    }
+    int screenCount = Fl::screen_count();
+    for (int i = 0; i < screenCount; ++i) {
+        int sx = 0;
+        int sy = 0;
+        int sw = 0;
+        int sh = 0;
+        Fl::screen_xywh(sx, sy, sw, sh, i);
+        const int overlapLeft = std::max(x, sx);
+        const int overlapTop = std::max(y, sy);
+        const int overlapRight = std::min(x + width, sx + sw);
+        const int overlapBottom = std::min(y + height, sy + sh);
+        if (overlapRight - overlapLeft >= 80 && overlapBottom - overlapTop >= 80) {
+            return true;
+        }
+    }
+    return false;
+}
 }
 
 MainWindow::MainWindow()
@@ -184,14 +234,24 @@ void MainWindow::buildInterface() {
     encryptionBrowser_->callback([](Fl_Widget*, void* data) {
         auto* window = static_cast<MainWindow*>(data);
         window->settings_.keys.encryptionFingerprint = window->selectedEncryptionFingerprint();
-        window->encryptionFingerprintOutput_->value(window->settings_.keys.encryptionFingerprint.c_str());
+        auto* key = window->selectedEncryptionKey();
+        window->encryptionFingerprintOutput_->value(key ? keyDetailText(*key, "Aucune clé de chiffrement sélectionnée").c_str()
+                                                        : "Aucune clé de chiffrement sélectionnée");
+        if (key && !keyWarningText(*key).empty()) {
+            window->appendLog("Avertissement sur la clé de chiffrement sélectionnée.");
+        }
         window->saveSettings();
     }, this);
     signingBrowser_ = new Fl_Hold_Browser(x + browserWidth + 16, y, browserWidth, 300);
     signingBrowser_->callback([](Fl_Widget*, void* data) {
         auto* window = static_cast<MainWindow*>(data);
         window->settings_.keys.signingFingerprint = window->selectedSigningFingerprint();
-        window->signingFingerprintOutput_->value(window->settings_.keys.signingFingerprint.c_str());
+        auto* key = window->selectedSigningKey();
+        window->signingFingerprintOutput_->value(key ? keyDetailText(*key, "Aucune clé de signature sélectionnée").c_str()
+                                                     : "Aucune clé de signature sélectionnée");
+        if (key && !keyWarningText(*key).empty()) {
+            window->appendLog("Avertissement sur la clé de signature sélectionnée.");
+        }
         window->saveSettings();
     }, this);
     y += 312;
@@ -219,7 +279,9 @@ void MainWindow::buildInterface() {
     executeTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeTextOperation(); }, this);
     auto copyTextButton = new Fl_Button(executeTextButton->x() + executeTextButton->w() + 8, y, 130, RowHeight, "Copier résultat");
     copyTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->copyTextResult(); }, this);
-    auto clearTextButton = new Fl_Button(copyTextButton->x() + copyTextButton->w() + 8, y, 80, RowHeight, "Effacer");
+    auto clearClipboardButton = new Fl_Button(copyTextButton->x() + copyTextButton->w() + 8, y, 150, RowHeight, "Vider presse-papiers");
+    clearClipboardButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->clearClipboard(); }, this);
+    auto clearTextButton = new Fl_Button(clearClipboardButton->x() + clearClipboardButton->w() + 8, y, 80, RowHeight, "Effacer");
     clearTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->clearTextBuffers(); }, this);
     auto saveTextButton = new Fl_Button(clearTextButton->x() + clearTextButton->w() + 8, y, 150, RowHeight, "Enregistrer résultat");
     saveTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->saveTextResult(); }, this);
@@ -275,8 +337,10 @@ void MainWindow::buildInterface() {
 
     logTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Journal");
     logTab_->begin();
+    auto clearLogButton = new Fl_Button(logTab_->x() + Margin, logTab_->y() + Margin, 130, RowHeight, "Effacer journal");
+    clearLogButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->clearLog(); }, this);
     logBuffer_ = new Fl_Text_Buffer();
-    logDisplay_ = new Fl_Text_Display(logTab_->x() + Margin, logTab_->y() + Margin, logTab_->w() - Margin * 2, logTab_->h() - Margin * 2);
+    logDisplay_ = new Fl_Text_Display(logTab_->x() + Margin, logTab_->y() + Margin + RowHeight + 8, logTab_->w() - Margin * 2, logTab_->h() - Margin * 2 - RowHeight - 8);
     logDisplay_->buffer(logBuffer_);
     logTab_->end();
 
@@ -289,11 +353,15 @@ void MainWindow::loadInitialState() {
     if (settings_.window.width > 0 && settings_.window.height > 0) {
         size(settings_.window.width, settings_.window.height);
     }
-    if (settings_.window.x >= 0 && settings_.window.y >= 0) {
+    if (windowLooksVisible(settings_.window.x, settings_.window.y, settings_.window.width, settings_.window.height)) {
         position(settings_.window.x, settings_.window.y);
     }
     if (settings_.window.lastTab == "keys") {
         tabs_->value(keysTab_);
+    } else if (settings_.window.lastTab == "text") {
+        tabs_->value(textTab_);
+    } else if (settings_.window.lastTab == "files") {
+        tabs_->value(filesTab_);
     } else if (settings_.window.lastTab == "log") {
         tabs_->value(logTab_);
     } else {
@@ -382,10 +450,10 @@ void MainWindow::reloadKeys() {
     encryptionKeys_.clear();
     signingKeys_.clear();
     for (const auto& key : keys) {
-        if (!key.expired && !key.revoked && key.canEncrypt) {
+        if (key.canEncrypt) {
             encryptionKeys_.push_back(key);
         }
-        if (!key.expired && !key.revoked && key.hasSecretKey && key.canSign) {
+        if (key.hasSecretKey && key.canSign) {
             signingKeys_.push_back(key);
         }
     }
@@ -468,35 +536,38 @@ void MainWindow::executeTextOperation() {
     GpgProcessResult result;
     std::string operationName;
     if (operation == 0) {
-        auto fingerprint = selectedEncryptionFingerprint();
-        if (fingerprint.empty()) {
+        auto* key = selectedEncryptionKey();
+        if (!key) {
             fl_alert("Sélectionnez une clé de chiffrement.");
             return;
         }
+        if (!confirmKeyWarnings(*key, "chiffrer ce texte")) {
+            return;
+        }
         operationName = "Chiffrement texte";
-        result = CryptoService(settings_.gpg.executablePath).encryptText(source, fingerprint);
+        result = CryptoService(settings_.gpg.executablePath).encryptText(source, key->fingerprint);
     } else if (operation == 1) {
         operationName = "Déchiffrement texte";
         result = CryptoService(settings_.gpg.executablePath).decryptText(source);
     } else if (operation == 2) {
-        auto fingerprint = selectedSigningFingerprint();
-        if (fingerprint.empty()) {
+        auto* key = selectedSigningKey();
+        if (!key) {
             fl_alert("Sélectionnez une clé de signature.");
             return;
         }
+        if (!confirmKeyWarnings(*key, "signer ce texte")) {
+            return;
+        }
         operationName = "Signature texte";
-        result = SignatureService(settings_.gpg.executablePath).signText(source, fingerprint);
+        result = SignatureService(settings_.gpg.executablePath).signText(source, key->fingerprint);
     } else {
         operationName = "Vérification texte";
         result = SignatureService(settings_.gpg.executablePath).verifyText(source);
     }
 
     if (operation == 3) {
-        std::string diagnostic = diagnosticText(result);
-        std::string message = result.success()
-                                  ? "Signature valide.\n\n"
-                                  : "Signature invalide ou non vérifiable.\n\n";
-        textResultBuffer_->text((message + diagnostic).c_str());
+        auto summary = SignatureService::summarizeVerification(result);
+        textResultBuffer_->text(summary.message.c_str());
     } else if (result.success()) {
         textResultBuffer_->text(result.standardOutput.c_str());
     } else {
@@ -525,6 +596,11 @@ void MainWindow::copyTextResult() {
     }
     Fl::copy(result.c_str(), static_cast<int>(result.size()), 1);
     appendLog("Résultat texte copié dans le presse-papiers.");
+}
+
+void MainWindow::clearClipboard() {
+    Fl::copy("", 0, 1);
+    appendLog("Presse-papiers vidé à la demande.");
 }
 
 void MainWindow::clearTextBuffers() {
@@ -663,24 +739,30 @@ void MainWindow::executeFileOperation() {
     GpgProcessResult result;
     std::string operationName;
     if (operation == 0) {
-        auto fingerprint = selectedEncryptionFingerprint();
-        if (fingerprint.empty()) {
+        auto* key = selectedEncryptionKey();
+        if (!key) {
             fl_alert("Sélectionnez une clé de chiffrement.");
             return;
         }
+        if (!confirmKeyWarnings(*key, "chiffrer ce fichier")) {
+            return;
+        }
         operationName = "Chiffrement fichier";
-        result = CryptoService(settings_.gpg.executablePath).encryptFile(source, destination, fingerprint, true);
+        result = CryptoService(settings_.gpg.executablePath).encryptFile(source, destination, key->fingerprint, true);
     } else if (operation == 1) {
         operationName = "Déchiffrement fichier";
         result = CryptoService(settings_.gpg.executablePath).decryptFile(source, destination);
     } else if (operation == 2) {
-        auto fingerprint = selectedSigningFingerprint();
-        if (fingerprint.empty()) {
+        auto* key = selectedSigningKey();
+        if (!key) {
             fl_alert("Sélectionnez une clé de signature.");
             return;
         }
+        if (!confirmKeyWarnings(*key, "signer ce fichier")) {
+            return;
+        }
         operationName = "Signature fichier";
-        result = SignatureService(settings_.gpg.executablePath).signFileDetached(source, signature, fingerprint);
+        result = SignatureService(settings_.gpg.executablePath).signFileDetached(source, signature, key->fingerprint);
     } else if (operation == 3) {
         operationName = "Vérification signature détachée";
         result = SignatureService(settings_.gpg.executablePath).verifyDetachedFile(signature, source);
@@ -691,8 +773,8 @@ void MainWindow::executeFileOperation() {
 
     if (result.success()) {
         if (operation == 3 || operation == 4) {
-            auto diagnostic = diagnosticText(result);
-            fileStatusOutput_->value(diagnostic.empty() ? "Signature valide." : diagnostic.c_str());
+            auto summary = SignatureService::summarizeVerification(result);
+            fileStatusOutput_->value(summary.message.c_str());
         } else {
             fileStatusOutput_->value("Opération réussie.");
         }
@@ -713,7 +795,12 @@ void MainWindow::executeFileOperation() {
     }
 
     auto diagnostic = diagnosticText(result);
-    fileStatusOutput_->value(diagnostic.empty() ? "L'opération GPG a échoué." : diagnostic.c_str());
+    if (operation == 3 || operation == 4) {
+        auto summary = SignatureService::summarizeVerification(result);
+        fileStatusOutput_->value(summary.message.c_str());
+    } else {
+        fileStatusOutput_->value(diagnostic.empty() ? "L'opération GPG a échoué." : diagnostic.c_str());
+    }
     std::ostringstream message;
     message << operationName << " échoué";
     if (result.exitCode >= 0) {
@@ -755,12 +842,12 @@ void MainWindow::restoreKeySelections() {
     if (signingBrowser_->value() == 0) {
         settings_.keys.signingFingerprint.clear();
     }
-    encryptionFingerprintOutput_->value(settings_.keys.encryptionFingerprint.empty()
-                                            ? "Aucune clé de chiffrement sélectionnée"
-                                            : settings_.keys.encryptionFingerprint.c_str());
-    signingFingerprintOutput_->value(settings_.keys.signingFingerprint.empty()
-                                         ? "Aucune clé de signature sélectionnée"
-                                         : settings_.keys.signingFingerprint.c_str());
+    auto* encryptionKey = selectedEncryptionKey();
+    auto* signingKey = selectedSigningKey();
+    encryptionFingerprintOutput_->value(encryptionKey ? keyDetailText(*encryptionKey, "Aucune clé de chiffrement sélectionnée").c_str()
+                                                       : "Aucune clé de chiffrement sélectionnée");
+    signingFingerprintOutput_->value(signingKey ? keyDetailText(*signingKey, "Aucune clé de signature sélectionnée").c_str()
+                                                : "Aucune clé de signature sélectionnée");
     saveSettings();
 }
 
@@ -770,6 +857,12 @@ void MainWindow::appendLog(const std::string& message) {
     }
     auto line = currentTimestamp() + "  " + message + "\n";
     logBuffer_->append(line.c_str());
+}
+
+void MainWindow::clearLog() {
+    if (logBuffer_) {
+        logBuffer_->text("");
+    }
 }
 
 void MainWindow::updateStatus(const std::string& message) {
@@ -790,6 +883,32 @@ std::string MainWindow::selectedSigningFingerprint() const {
         return {};
     }
     return signingKeys_[index - 1].fingerprint;
+}
+
+const GpgKey* MainWindow::selectedEncryptionKey() const {
+    int index = encryptionBrowser_->value();
+    if (index <= 0 || index > static_cast<int>(encryptionKeys_.size())) {
+        return nullptr;
+    }
+    return &encryptionKeys_[index - 1];
+}
+
+const GpgKey* MainWindow::selectedSigningKey() const {
+    int index = signingBrowser_->value();
+    if (index <= 0 || index > static_cast<int>(signingKeys_.size())) {
+        return nullptr;
+    }
+    return &signingKeys_[index - 1];
+}
+
+bool MainWindow::confirmKeyWarnings(const GpgKey& key, const std::string& usage) {
+    auto warnings = keyWarningText(key);
+    if (warnings.empty()) {
+        return true;
+    }
+    std::ostringstream message;
+    message << warnings << "\nEmpreinte : " << key.fingerprint << "\n\nContinuer pour " << usage << " ?";
+    return fl_choice("%s", "Annuler", "Continuer", "", message.str().c_str()) == 1;
 }
 
 void MainWindow::updateLastTab() {

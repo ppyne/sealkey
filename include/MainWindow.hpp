@@ -37,6 +37,7 @@ private:
     void exportEncryptionPublicKey();
     void executeTextOperation();
     void copyTextResult();
+    void clearClipboard();
     void clearTextBuffers();
     void saveTextResult();
     void chooseFileSource();
@@ -46,9 +47,13 @@ private:
     void populateKeyBrowsers();
     void restoreKeySelections();
     void appendLog(const std::string& message);
+    void clearLog();
     void updateStatus(const std::string& message);
     std::string selectedEncryptionFingerprint() const;
     std::string selectedSigningFingerprint() const;
+    const GpgKey* selectedEncryptionKey() const;
+    const GpgKey* selectedSigningKey() const;
+    bool confirmKeyWarnings(const GpgKey& key, const std::string& usage);
     void updateLastTab();
 
     static void onClose(Fl_Widget* widget, void* data);

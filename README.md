@@ -2,7 +2,7 @@
 
 SealKey is a lightweight FLTK desktop helper for the local `gpg` executable.
 
-Version 0.3 provides:
+Version 0.4 provides:
 
 - a C++20/CMake project structure;
 - an FLTK application named `sealkey`;
@@ -23,7 +23,12 @@ Version 0.3 provides:
 - file decryption through `gpg --yes --decrypt --output <DESTINATION> <SOURCE>`;
 - detached ASCII file signing through `gpg --armor --detach-sign --local-user <FINGERPRINT> --output <SIGNATURE> <SOURCE>`;
 - detached signature verification through `gpg --verify <SIGNATURE> <SOURCE>`;
-- signed-file verification through `gpg --verify <SIGNED_FILE>`.
+- signed-file verification through `gpg --verify <SIGNED_FILE>`;
+- clearer signature diagnostics for valid, invalid, unknown-key, expired, revoked and untrusted-key cases;
+- visible warnings before using expired, revoked or not fully trusted keys;
+- explicit clipboard clearing;
+- journal clearing;
+- full last-tab restoration and safer restored window placement.
 
 The application calls `gpg` as an external process and passes arguments as a vector. It does not use Qt, wxWidgets, GTK, Electron, libgpgme or OpenSSL, and it does not store passphrases or secrets.
 
@@ -55,10 +60,10 @@ SealKey stores only non-sensitive preferences:
 - macOS: `~/Library/Application Support/sealkey/preferences.ini`;
 - Windows: `%APPDATA%\sealkey\preferences.ini`.
 
-Stored values include window geometry, selected `gpg` executable, selected full fingerprints and last-used directories.
+Stored values include window geometry, last tab, selected `gpg` executable, selected full fingerprints, last-used directories, ASCII armor preference and preferred signature type.
 
 ## Current Limits
 
 Text operations use stdin/stdout. File operations pass explicit source, destination and signature paths to `gpg` as argument vectors. SealKey does not store source text, encrypted text, signatures, passphrases, file contents or operation outputs in preferences. The Journal tab records only short operation status messages.
 
-Version 0.4 is expected to improve warnings, trust/expiration/revocation diagnostics, journal ergonomics and other security-focused UI details.
+Remaining work before 1.0 is mostly distribution quality: platform packaging, icon, broader integration tests and platform-specific build documentation.
