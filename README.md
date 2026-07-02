@@ -2,7 +2,7 @@
 
 SealKey is a lightweight FLTK desktop helper for the local `gpg` executable.
 
-Version 0.2 provides:
+Version 0.3 provides:
 
 - a C++20/CMake project structure;
 - an FLTK application named `sealkey`;
@@ -18,7 +18,12 @@ Version 0.2 provides:
 - text decryption through `gpg --decrypt`;
 - clear text signing through `gpg --clearsign --local-user <FINGERPRINT>`;
 - signed text verification through `gpg --verify`;
-- text result copy, clearing and save-to-file.
+- text result copy, clearing and save-to-file;
+- file encryption through `gpg --yes --batch --armor --encrypt --recipient <FINGERPRINT> --output <DESTINATION> <SOURCE>`;
+- file decryption through `gpg --yes --decrypt --output <DESTINATION> <SOURCE>`;
+- detached ASCII file signing through `gpg --armor --detach-sign --local-user <FINGERPRINT> --output <SIGNATURE> <SOURCE>`;
+- detached signature verification through `gpg --verify <SIGNATURE> <SOURCE>`;
+- signed-file verification through `gpg --verify <SIGNED_FILE>`.
 
 The application calls `gpg` as an external process and passes arguments as a vector. It does not use Qt, wxWidgets, GTK, Electron, libgpgme or OpenSSL, and it does not store passphrases or secrets.
 
@@ -54,6 +59,6 @@ Stored values include window geometry, selected `gpg` executable, selected full 
 
 ## Current Limits
 
-The Fichiers tab is present but intentionally inactive. File encryption/decryption, detached file signing and file signature verification are planned for later versions.
+Text operations use stdin/stdout. File operations pass explicit source, destination and signature paths to `gpg` as argument vectors. SealKey does not store source text, encrypted text, signatures, passphrases, file contents or operation outputs in preferences. The Journal tab records only short operation status messages.
 
-Text operations use stdin/stdout and do not store source text, encrypted text, signatures, passphrases or operation outputs in preferences. The Journal tab records only short operation status messages.
+Version 0.4 is expected to improve warnings, trust/expiration/revocation diagnostics, journal ergonomics and other security-focused UI details.

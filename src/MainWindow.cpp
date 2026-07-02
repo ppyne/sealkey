@@ -81,6 +81,32 @@ bool directoryExists(const std::string& path) {
     return std::filesystem::exists(path, ec) && std::filesystem::is_directory(path, ec);
 }
 
+bool fileExists(const std::string& path) {
+    if (path.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) && std::filesystem::is_regular_file(path, ec);
+}
+
+std::string defaultFileNameForOperation(const std::string& source, int operation) {
+    if (source.empty()) {
+        return operation == 2 ? "signature.asc" : "sealkey-output";
+    }
+    std::filesystem::path sourcePath(source);
+    if (operation == 0) {
+        return (sourcePath.filename().string() + ".asc");
+    }
+    if (operation == 1) {
+        auto stem = sourcePath.stem().string();
+        return stem.empty() ? "decrypted-output" : stem;
+    }
+    if (operation == 2) {
+        return (sourcePath.filename().string() + ".sig.asc");
+    }
+    return "sealkey-output";
+}
+
 std::string bufferText(Fl_Text_Buffer* buffer) {
     if (!buffer) {
         return {};
@@ -214,8 +240,37 @@ void MainWindow::buildInterface() {
 
     filesTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Fichiers");
     filesTab_->begin();
-    new Fl_Box(filesTab_->x() + Margin, filesTab_->y() + Margin, 380, RowHeight, "Fonctions fichiers prévues en version 0.3");
-    filesTab_->deactivate();
+    x = filesTab_->x() + Margin;
+    y = filesTab_->y() + Margin;
+    contentWidth = filesTab_->w() - Margin * 2;
+    fileOperationChoice_ = new Fl_Choice(x + LabelWidth, y, 220, RowHeight, "Opération");
+    fileOperationChoice_->add("Chiffrer");
+    fileOperationChoice_->add("Déchiffrer");
+    fileOperationChoice_->add("Signer détaché");
+    fileOperationChoice_->add("Vérifier signature détachée");
+    fileOperationChoice_->add("Vérifier fichier signé");
+    fileOperationChoice_->value(0);
+    y += RowHeight + 10;
+    new Fl_Box(x, y, LabelWidth, RowHeight, "Source");
+    fileSourceInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
+    auto chooseSourceButton = new Fl_Button(fileSourceInput_->x() + fileSourceInput_->w() + 8, y, 100, RowHeight, "Choisir");
+    chooseSourceButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseFileSource(); }, this);
+    y += RowHeight + 10;
+    new Fl_Box(x, y, LabelWidth, RowHeight, "Destination");
+    fileDestinationInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
+    auto chooseDestinationButton = new Fl_Button(fileDestinationInput_->x() + fileDestinationInput_->w() + 8, y, 100, RowHeight, "Choisir");
+    chooseDestinationButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseFileDestination(); }, this);
+    y += RowHeight + 10;
+    new Fl_Box(x, y, LabelWidth, RowHeight, "Signature");
+    fileSignatureInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 220, RowHeight);
+    auto chooseSignatureOpenButton = new Fl_Button(fileSignatureInput_->x() + fileSignatureInput_->w() + 8, y, 100, RowHeight, "Ouvrir");
+    chooseSignatureOpenButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseSignatureFile(false); }, this);
+    auto chooseSignatureSaveButton = new Fl_Button(chooseSignatureOpenButton->x() + chooseSignatureOpenButton->w() + 8, y, 100, RowHeight, "Enregistrer");
+    chooseSignatureSaveButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseSignatureFile(true); }, this);
+    y += RowHeight + 14;
+    auto executeFileButton = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Exécuter");
+    executeFileButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeFileOperation(); }, this);
+    fileStatusOutput_ = new Fl_Output(executeFileButton->x() + executeFileButton->w() + 12, y, contentWidth - LabelWidth - executeFileButton->w() - 12, RowHeight);
     filesTab_->end();
 
     logTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Journal");
@@ -512,6 +567,160 @@ void MainWindow::saveTextResult() {
     settings_.paths.lastSaveDir = directoryOf(chooser.filename());
     saveSettings();
     appendLog("Résultat texte enregistré.");
+}
+
+void MainWindow::chooseFileSource() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Choisir le fichier source");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    if (directoryExists(settings_.paths.lastOpenDir)) {
+        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    }
+    if (chooser.show() == 0 && chooser.filename()) {
+        fileSourceInput_->value(chooser.filename());
+        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
+        saveSettings();
+    }
+}
+
+void MainWindow::chooseFileDestination() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Choisir le fichier destination");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
+    auto defaultName = defaultFileNameForOperation(fileSourceInput_->value() ? fileSourceInput_->value() : "",
+                                                   fileOperationChoice_->value());
+    chooser.preset_file(defaultName.c_str());
+    if (directoryExists(settings_.paths.lastSaveDir)) {
+        chooser.directory(settings_.paths.lastSaveDir.c_str());
+    }
+    if (chooser.show() == 0 && chooser.filename()) {
+        fileDestinationInput_->value(chooser.filename());
+        settings_.paths.lastSaveDir = directoryOf(chooser.filename());
+        saveSettings();
+    }
+}
+
+void MainWindow::chooseSignatureFile(bool saveMode) {
+    Fl_Native_File_Chooser chooser;
+    chooser.title(saveMode ? "Choisir le fichier signature à écrire" : "Choisir le fichier signature");
+    chooser.type(saveMode ? Fl_Native_File_Chooser::BROWSE_SAVE_FILE : Fl_Native_File_Chooser::BROWSE_FILE);
+    chooser.filter("Signatures ASCII\t*.asc\nSignatures\t*.sig\nTous les fichiers\t*");
+    if (saveMode) {
+        auto defaultName = defaultFileNameForOperation(fileSourceInput_->value() ? fileSourceInput_->value() : "", 2);
+        chooser.preset_file(defaultName.c_str());
+        if (directoryExists(settings_.paths.lastSignatureSaveDir)) {
+            chooser.directory(settings_.paths.lastSignatureSaveDir.c_str());
+        } else if (directoryExists(settings_.paths.lastSaveDir)) {
+            chooser.directory(settings_.paths.lastSaveDir.c_str());
+        }
+    } else if (directoryExists(settings_.paths.lastSignatureOpenDir)) {
+        chooser.directory(settings_.paths.lastSignatureOpenDir.c_str());
+    } else if (directoryExists(settings_.paths.lastOpenDir)) {
+        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    }
+    if (chooser.show() == 0 && chooser.filename()) {
+        fileSignatureInput_->value(chooser.filename());
+        if (saveMode) {
+            settings_.paths.lastSignatureSaveDir = directoryOf(chooser.filename());
+            settings_.paths.lastSaveDir = settings_.paths.lastSignatureSaveDir;
+        } else {
+            settings_.paths.lastSignatureOpenDir = directoryOf(chooser.filename());
+            settings_.paths.lastOpenDir = settings_.paths.lastSignatureOpenDir;
+        }
+        saveSettings();
+    }
+}
+
+void MainWindow::executeFileOperation() {
+    updateGpgPath(gpgPathInput_->value() ? gpgPathInput_->value() : "", true);
+    if (settings_.gpg.executablePath.empty()) {
+        fl_alert("Sélectionnez un exécutable gpg avant d'exécuter une opération fichier.");
+        return;
+    }
+
+    const int operation = fileOperationChoice_->value();
+    std::string source = fileSourceInput_->value() ? fileSourceInput_->value() : "";
+    std::string destination = fileDestinationInput_->value() ? fileDestinationInput_->value() : "";
+    std::string signature = fileSignatureInput_->value() ? fileSignatureInput_->value() : "";
+
+    if (!fileExists(source)) {
+        fl_alert("Sélectionnez un fichier source existant.");
+        return;
+    }
+    if ((operation == 0 || operation == 1) && destination.empty()) {
+        fl_alert("Sélectionnez un fichier destination.");
+        return;
+    }
+    if (operation == 2 && signature.empty()) {
+        fl_alert("Sélectionnez le fichier signature à écrire.");
+        return;
+    }
+    if (operation == 3 && !fileExists(signature)) {
+        fl_alert("Sélectionnez un fichier signature existant.");
+        return;
+    }
+
+    GpgProcessResult result;
+    std::string operationName;
+    if (operation == 0) {
+        auto fingerprint = selectedEncryptionFingerprint();
+        if (fingerprint.empty()) {
+            fl_alert("Sélectionnez une clé de chiffrement.");
+            return;
+        }
+        operationName = "Chiffrement fichier";
+        result = CryptoService(settings_.gpg.executablePath).encryptFile(source, destination, fingerprint, true);
+    } else if (operation == 1) {
+        operationName = "Déchiffrement fichier";
+        result = CryptoService(settings_.gpg.executablePath).decryptFile(source, destination);
+    } else if (operation == 2) {
+        auto fingerprint = selectedSigningFingerprint();
+        if (fingerprint.empty()) {
+            fl_alert("Sélectionnez une clé de signature.");
+            return;
+        }
+        operationName = "Signature fichier";
+        result = SignatureService(settings_.gpg.executablePath).signFileDetached(source, signature, fingerprint);
+    } else if (operation == 3) {
+        operationName = "Vérification signature détachée";
+        result = SignatureService(settings_.gpg.executablePath).verifyDetachedFile(signature, source);
+    } else {
+        operationName = "Vérification fichier signé";
+        result = SignatureService(settings_.gpg.executablePath).verifySignedFile(source);
+    }
+
+    if (result.success()) {
+        if (operation == 3 || operation == 4) {
+            auto diagnostic = diagnosticText(result);
+            fileStatusOutput_->value(diagnostic.empty() ? "Signature valide." : diagnostic.c_str());
+        } else {
+            fileStatusOutput_->value("Opération réussie.");
+        }
+        settings_.paths.lastOpenDir = directoryOf(source);
+        if (!destination.empty()) {
+            settings_.paths.lastSaveDir = directoryOf(destination);
+        }
+        if (!signature.empty()) {
+            if (operation == 2) {
+                settings_.paths.lastSignatureSaveDir = directoryOf(signature);
+            } else {
+                settings_.paths.lastSignatureOpenDir = directoryOf(signature);
+            }
+        }
+        saveSettings();
+        appendLog(operationName + " réussi.");
+        return;
+    }
+
+    auto diagnostic = diagnosticText(result);
+    fileStatusOutput_->value(diagnostic.empty() ? "L'opération GPG a échoué." : diagnostic.c_str());
+    std::ostringstream message;
+    message << operationName << " échoué";
+    if (result.exitCode >= 0) {
+        message << " (code " << result.exitCode << ")";
+    }
+    message << ".";
+    appendLog(message.str());
 }
 
 void MainWindow::populateKeyBrowsers() {

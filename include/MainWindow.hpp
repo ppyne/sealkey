@@ -39,6 +39,10 @@ private:
     void copyTextResult();
     void clearTextBuffers();
     void saveTextResult();
+    void chooseFileSource();
+    void chooseFileDestination();
+    void chooseSignatureFile(bool saveMode);
+    void executeFileOperation();
     void populateKeyBrowsers();
     void restoreKeySelections();
     void appendLog(const std::string& message);
@@ -71,6 +75,11 @@ private:
     Fl_Text_Buffer* textResultBuffer_ = nullptr;
     Fl_Text_Editor* textSourceEditor_ = nullptr;
     Fl_Text_Display* textResultDisplay_ = nullptr;
+    Fl_Choice* fileOperationChoice_ = nullptr;
+    Fl_Input* fileSourceInput_ = nullptr;
+    Fl_Input* fileDestinationInput_ = nullptr;
+    Fl_Input* fileSignatureInput_ = nullptr;
+    Fl_Output* fileStatusOutput_ = nullptr;
     Fl_Text_Buffer* logBuffer_ = nullptr;
     Fl_Text_Display* logDisplay_ = nullptr;
 };
