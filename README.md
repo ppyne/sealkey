@@ -1,3 +1,5 @@
+![SealKey](icons/linux_icons/sealkey_128x128.png "SealKey").
+
 # SealKey
 
 SealKey is a lightweight FLTK desktop assistant for common local `gpg` workflows.
