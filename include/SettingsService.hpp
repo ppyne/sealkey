@@ -31,7 +31,12 @@ struct PathSettings {
 
 struct OptionSettings {
     bool armor = true;
+    bool encryptAndSign = false;
     std::string signatureType = "detached_ascii";
+    std::string encryptedFileExtension = "gpg";
+    std::string signatureFileExtension = "sig";
+    std::string privateKeyColumnWidths = "110,155,85,285,70,85";
+    std::string recipientKeyColumnWidths = "110,155,85,285,70,85";
 };
 
 struct AppSettings {

@@ -42,4 +42,7 @@ void runKeyParserTests() {
     auto identity = identityFromKey(secretKeys[0]);
     assert(identity.name == "Bob Example");
     assert(identity.canSign);
+    assert(formatGpgTimestampDate("1800000000") == "2027-01-15");
+    assert(formatGpgTimestampDate("") == "");
+    assert(formatGpgTimestampDate("not-a-timestamp") == "not-a-timestamp");
 }

@@ -21,6 +21,7 @@ public:
                                         const std::string& signingFingerprint,
                                         bool armor = true) const;
     GpgProcessResult decryptFile(const std::string& sourcePath, const std::string& destinationPath) const;
+    GpgProcessResult inspectEncryptedFile(const std::string& sourcePath) const;
 
     static std::vector<std::string> encryptTextArguments(const std::string& recipientFingerprint, bool armor = true);
     static std::vector<std::string> decryptTextArguments();
@@ -35,6 +36,7 @@ public:
                                                                 bool armor = true);
     static std::vector<std::string> decryptFileArguments(const std::string& sourcePath,
                                                          const std::string& destinationPath);
+    static std::vector<std::string> inspectEncryptedFileArguments(const std::string& sourcePath);
 
 private:
     std::string gpgExecutable_;

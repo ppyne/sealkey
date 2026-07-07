@@ -5,43 +5,158 @@
 #include "GpgExecutable.hpp"
 #include "KeyStore.hpp"
 #include "SealKeyModels.hpp"
+#include "SealKeyPaths.hpp"
 #include "SignatureService.hpp"
 
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
+#include <FL/Fl_Browser.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Group.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Input.H>
+#include <FL/Fl_Int_Input.H>
+#include <FL/Fl_Multiline_Output.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/Fl_Output.H>
 #include <FL/Fl_Tabs.H>
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Text_Display.H>
-#include <FL/Fl_Text_Editor.H>
+#include <FL/Fl_Window.H>
 #include <FL/fl_ask.H>
+#include <FL/fl_draw.H>
 
 #include <algorithm>
-#include <chrono>
+#include <array>
+#include <cctype>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
-#include <iomanip>
+#include <map>
+#include <set>
 #include <sstream>
+#include <ctime>
+#include <utility>
 
 namespace {
-constexpr int Margin = 12;
-constexpr int LabelWidth = 120;
+constexpr int Margin = 14;
 constexpr int RowHeight = 28;
+constexpr int LabelWidth = 190;
+constexpr int ButtonWidth = 92;
+constexpr int PrivateKeyColumnCount = 6;
+constexpr int MinPrivateKeyColumnWidth = 45;
+int SignerColumnWidths[] = {220, 220, 170, 160, 0};
+
+std::string valueOf(Fl_Input* input) {
+    return input && input->value() ? input->value() : "";
+}
+
+std::string trim(std::string value) {
+    auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](unsigned char c) {
+                    return !isSpace(c);
+                }));
+    value.erase(std::find_if(value.rbegin(), value.rend(), [&](unsigned char c) {
+                    return !isSpace(c);
+                }).base(),
+                value.end());
+    return value;
+}
+
+bool validEmail(const std::string& email) {
+    auto at = email.find('@');
+    auto dot = email.find('.', at == std::string::npos ? 0 : at);
+    return !email.empty() && at != std::string::npos && at > 0 && dot != std::string::npos && dot > at + 1 &&
+           dot + 1 < email.size() && email.find(' ') == std::string::npos;
+}
+
+std::string extractEmailFromUid(const std::string& uid) {
+    auto start = uid.find('<');
+    auto end = uid.find('>', start == std::string::npos ? 0 : start);
+    if (start == std::string::npos || end == std::string::npos || end <= start + 1) {
+        return {};
+    }
+    return uid.substr(start + 1, end - start - 1);
+}
+
+bool fileExists(const std::string& path) {
+    std::error_code ec;
+    return !path.empty() && std::filesystem::exists(path, ec) && std::filesystem::is_regular_file(path, ec);
+}
+
+bool directoryExists(const std::string& path) {
+    std::error_code ec;
+    return !path.empty() && std::filesystem::exists(path, ec) && std::filesystem::is_directory(path, ec);
+}
+
+std::string directoryOf(const std::string& path) {
+    return std::filesystem::path(path).parent_path().string();
+}
+
+std::string homeDirectory() {
+#ifdef _WIN32
+    if (const char* userProfile = std::getenv("USERPROFILE")) {
+        return userProfile;
+    }
+#else
+    if (const char* home = std::getenv("HOME")) {
+        return home;
+    }
+#endif
+    return {};
+}
+
+std::string existingDirectoryForFileChooser(const std::string& filePath) {
+    auto directory = directoryOf(filePath);
+    if (directoryExists(directory)) {
+        return directory;
+    }
+    auto home = homeDirectory();
+    return directoryExists(home) ? home : std::string{};
+}
+
+std::string diagnosticText(const GpgProcessResult& result) {
+    std::ostringstream out;
+    out << "Code retour : " << result.exitCode;
+    if (!result.errorMessage.empty()) {
+        out << "\nErreur de lancement : " << result.errorMessage;
+    }
+    if (!result.standardOutput.empty()) {
+        out << "\nSortie standard :\n" << result.standardOutput;
+    }
+    if (!result.standardError.empty()) {
+        out << "\nSortie erreur :\n" << result.standardError;
+    }
+    return out.str();
+}
+
+std::string readableGpgError(const std::string& operation, const std::string& file, const GpgProcessResult& result) {
+    std::ostringstream out;
+    out << operation;
+    if (!file.empty()) {
+        out << "\nFichier : " << file;
+    }
+    out << "\n" << diagnosticText(result);
+    return out.str();
+}
 
 std::string keyLabel(const GpgKey& key) {
     std::ostringstream label;
-    label << (key.uid.empty() ? "(UID indisponible)" : key.uid);
+    label << (key.uid.empty() ? "(identité inconnue)" : key.uid);
+    if (!key.keyId.empty()) {
+        label << "  [" << key.keyId << "]";
+    }
     if (!key.fingerprint.empty()) {
-        label << "  [" << key.fingerprint << "]";
+        label << "  " << key.fingerprint;
+    }
+    if (!key.capabilities.empty()) {
+        label << "  cap:" << key.capabilities;
+    }
+    if (!key.expiresAt.empty()) {
+        label << "  exp:" << key.expiresAt;
     }
     if (key.expired) {
         label << "  expirée";
@@ -49,642 +164,1014 @@ std::string keyLabel(const GpgKey& key) {
     if (key.revoked) {
         label << "  révoquée";
     }
-    if (key.validity != "f" && key.validity != "u") {
-        label << "  confiance limitée";
-    }
     return label.str();
 }
 
-std::string keyWarningText(const GpgKey& key) {
-    std::ostringstream warning;
-    if (key.expired) {
-        warning << "Cette clé est expirée.\n";
-    }
-    if (key.revoked) {
-        warning << "Cette clé est révoquée.\n";
-    }
-    if (key.validity != "f" && key.validity != "u") {
-        warning << "La confiance de cette clé n'est pas pleinement établie.\n";
-    }
-    return warning.str();
+std::string privateKeyColumnLabel(const GpgKey& key) {
+    auto identity = identityFromKey(key);
+    std::ostringstream label;
+    label << (identity.name.empty() ? "(sans nom)" : identity.name) << '\t'
+          << (identity.email.empty() ? "-" : identity.email) << '\t'
+          << shortFingerprint(identity.fingerprint) << '\t'
+          << identity.fingerprint << '\t'
+          << (key.capabilities.empty() ? "-" : key.capabilities) << '\t'
+          << (identity.expiresAt.empty() ? "-" : formatGpgTimestampDate(identity.expiresAt));
+    return label.str();
 }
 
-std::string keyDetailText(const GpgKey& key, const std::string& emptyText) {
-    if (key.fingerprint.empty()) {
-        return emptyText;
-    }
-    auto warnings = keyWarningText(key);
-    if (warnings.empty()) {
-        return key.fingerprint;
-    }
-    return key.fingerprint + "  -  " + warnings.substr(0, warnings.find('\n'));
+std::string recipientKeyColumnLabel(const GpgKey& key) {
+    auto contact = contactFromKey(key);
+    std::ostringstream label;
+    label << (contact.name.empty() ? "(sans nom)" : contact.name) << '\t'
+          << (contact.email.empty() ? "-" : contact.email) << '\t'
+          << shortFingerprint(contact.fingerprint) << '\t'
+          << contact.fingerprint << '\t'
+          << (key.capabilities.empty() ? "-" : key.capabilities) << '\t'
+          << (contact.expiresAt.empty() ? "-" : formatGpgTimestampDate(contact.expiresAt));
+    return label.str();
 }
 
-std::string currentTimestamp() {
-    auto now = std::chrono::system_clock::now();
-    auto time = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-#ifdef _WIN32
-    localtime_s(&tm, &time);
-#else
-    localtime_r(&time, &tm);
-#endif
+std::string yesNo(bool value) {
+    return value ? "Oui" : "Non";
+}
+
+std::string formattedDateOrDash(const std::string& timestamp) {
+    return timestamp.empty() ? "-" : formatGpgTimestampDate(timestamp);
+}
+
+void addInfoRow(Fl_Browser* browser, const std::string& label, const std::string& value) {
+    browser->add((label + '\t' + (value.empty() ? "-" : value)).c_str());
+}
+
+void showKeyInfoDialog(const GpgKey& key) {
+    auto* dialog = new Fl_Window(720, 430, "Informations de la clé");
+    dialog->set_modal();
+    int x = 18;
+    int y = 20;
+    auto* browser = new Fl_Browser(x, y, dialog->w() - 36, 340);
+    static int columnWidths[] = {170, 500, 0};
+    browser->column_char('\t');
+    browser->column_widths(columnWidths);
+    browser->format_char(0);
+    addInfoRow(browser, "Type", key.hasSecretKey ? "Clé privée locale" : "Clé publique");
+    addInfoRow(browser, "Identité", key.uid);
+    addInfoRow(browser, "Email", key.email);
+    addInfoRow(browser, "Fingerprint court", shortFingerprint(key.fingerprint));
+    addInfoRow(browser, "Fingerprint long", key.fingerprint);
+    addInfoRow(browser, "Key ID", key.keyId);
+    addInfoRow(browser, "Création", formattedDateOrDash(key.createdAt));
+    addInfoRow(browser, "Expiration", formattedDateOrDash(key.expiresAt));
+    addInfoRow(browser, "Capacités brutes", key.capabilities);
+    addInfoRow(browser, "Signer", yesNo(key.canSign));
+    addInfoRow(browser, "Chiffrer", yesNo(key.canEncrypt));
+    addInfoRow(browser, "Certifier", yesNo(key.canCertify));
+    addInfoRow(browser, "Authentifier", yesNo(key.canAuthenticate));
+    addInfoRow(browser, "Révoquée", yesNo(key.revoked));
+    addInfoRow(browser, "Expirée", yesNo(key.expired));
+    addInfoRow(browser, "Validité GPG", key.validity);
+    y += 354;
+    auto* closeButton = new Fl_Button(dialog->w() - 118, y, 100, RowHeight, "Fermer");
+    closeButton->callback([](Fl_Widget*, void* data) {
+        static_cast<Fl_Window*>(data)->hide();
+    }, dialog);
+    dialog->end();
+    dialog->show();
+    while (dialog->shown()) {
+        Fl::wait();
+    }
+    delete dialog;
+}
+
+struct SignerDisplayInfo {
+    std::string name;
+    std::string email;
+    std::string keyId;
+    std::string status;
+};
+
+std::vector<std::string> splitWords(const std::string& text) {
+    std::vector<std::string> words;
+    std::istringstream input(text);
+    std::string word;
+    while (input >> word) {
+        words.push_back(word);
+    }
+    return words;
+}
+
+std::string signerStatusLabel(const std::string& status) {
+    if (status == "GOODSIG" || status == "VALIDSIG") {
+        return "Signature valide";
+    }
+    if (status == "BADSIG") {
+        return "Signature invalide";
+    }
+    if (status == "NO_PUBKEY") {
+        return "Clé publique inconnue";
+    }
+    if (status == "ERRSIG") {
+        return "Signature non vérifiable";
+    }
+    return status.empty() ? "Signature détectée" : status;
+}
+
+std::vector<SignerDisplayInfo> signerInfoFromGpgText(const std::string& text) {
+    std::map<std::string, SignerDisplayInfo> signers;
+    std::string lastKey;
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        constexpr const char* prefix = "[GNUPG:] ";
+        if (line.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        auto payload = line.substr(std::string(prefix).size());
+        auto words = splitWords(payload);
+        if (words.empty()) {
+            continue;
+        }
+        const auto& record = words.front();
+        if ((record == "GOODSIG" || record == "BADSIG") && words.size() >= 2) {
+            auto keyId = words[1];
+            auto uidStart = payload.find(keyId);
+            std::string uid;
+            if (uidStart != std::string::npos) {
+                uid = trim(payload.substr(uidStart + keyId.size()));
+            }
+            auto& signer = signers[keyId];
+            signer.keyId = keyId;
+            signer.name = uid.empty() ? "-" : displayNameFromUid(uid);
+            signer.email = extractEmailFromUid(uid);
+            signer.status = signerStatusLabel(record);
+            lastKey = keyId;
+        } else if (record == "VALIDSIG" && words.size() >= 2) {
+            auto fingerprint = words[1];
+            auto key = lastKey.empty() ? fingerprint : lastKey;
+            auto& signer = signers[key];
+            signer.keyId = fingerprint;
+            if (signer.name.empty()) {
+                signer.name = "-";
+            }
+            signer.status = signerStatusLabel(record);
+            lastKey = key;
+        } else if ((record == "ERRSIG" || record == "NO_PUBKEY") && words.size() >= 2) {
+            auto keyId = words[1];
+            auto& signer = signers[keyId];
+            signer.keyId = keyId;
+            signer.name = "-";
+            signer.status = signerStatusLabel(record);
+            lastKey = keyId;
+        }
+    }
+
+    std::vector<SignerDisplayInfo> output;
+    for (auto& [key, signer] : signers) {
+        (void)key;
+        if (signer.email.empty()) {
+            signer.email = "-";
+        }
+        output.push_back(signer);
+    }
+    return output;
+}
+
+std::string serializeColumnWidths(const int* widths, int count) {
     std::ostringstream output;
-    output << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    for (int i = 0; i < count; ++i) {
+        if (i > 0) {
+            output << ',';
+        }
+        output << widths[i];
+    }
     return output.str();
 }
 
-std::string directoryOf(const std::string& path) {
-    if (path.empty()) {
-        return {};
+void parseColumnWidths(const std::string& text, std::array<int, 7>& widths) {
+    std::istringstream input(text);
+    std::string item;
+    int index = 0;
+    while (index < PrivateKeyColumnCount && std::getline(input, item, ',')) {
+        try {
+            int value = std::stoi(trim(item));
+            if (value >= MinPrivateKeyColumnWidth && value <= 800) {
+                widths[index] = value;
+            }
+        } catch (...) {
+        }
+        ++index;
     }
-    std::error_code ec;
-    auto directory = std::filesystem::path(path).parent_path();
-    return directory.empty() ? std::string{} : directory.string();
+    widths[PrivateKeyColumnCount] = 0;
 }
 
-bool directoryExists(const std::string& path) {
-    if (path.empty()) {
-        return false;
-    }
-    std::error_code ec;
-    return std::filesystem::exists(path, ec) && std::filesystem::is_directory(path, ec);
-}
+class ColumnHeader : public Fl_Widget {
+public:
+    ColumnHeader(int x,
+                 int y,
+                 int w,
+                 int h,
+                 std::array<int, 7>& widths,
+                 std::vector<std::string> labels,
+                 std::function<void()> onResize)
+        : Fl_Widget(x, y, w, h),
+          widths_(widths),
+          labels_(std::move(labels)),
+          onResize_(std::move(onResize)) {}
 
-bool fileExists(const std::string& path) {
-    if (path.empty()) {
-        return false;
-    }
-    std::error_code ec;
-    return std::filesystem::exists(path, ec) && std::filesystem::is_regular_file(path, ec);
-}
+    void draw() override {
+        fl_push_clip(x(), y(), w(), h());
+        fl_color(FL_BACKGROUND_COLOR);
+        fl_rectf(x(), y(), w(), h());
+        fl_color(FL_DARK3);
+        fl_rect(x(), y(), w(), h());
 
-std::string defaultFileNameForOperation(const std::string& source, int operation) {
-    if (source.empty()) {
-        return operation == 2 ? "signature.asc" : "sealkey-output";
+        int currentX = x();
+        for (int i = 0; i < PrivateKeyColumnCount; ++i) {
+            fl_color(FL_BLACK);
+            fl_font(FL_HELVETICA_BOLD, 12);
+            fl_draw(labels_[static_cast<std::size_t>(i)].c_str(), currentX + 4, y(), widths_[static_cast<std::size_t>(i)] - 8, h(),
+                    FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+            currentX += widths_[static_cast<std::size_t>(i)];
+            fl_color(FL_DARK3);
+            fl_line(currentX, y(), currentX, y() + h());
+        }
+        fl_pop_clip();
     }
-    std::filesystem::path sourcePath(source);
-    if (operation == 0) {
-        return (sourcePath.filename().string() + ".asc");
-    }
-    if (operation == 1) {
-        auto stem = sourcePath.stem().string();
-        return stem.empty() ? "decrypted-output" : stem;
-    }
-    if (operation == 2) {
-        return (sourcePath.filename().string() + ".sig.asc");
-    }
-    return "sealkey-output";
-}
 
-std::string defaultProtectedFileName(const std::string& source, bool encrypted) {
-    if (source.empty()) {
-        return encrypted ? "fichier-protege.gpg" : "signature.asc";
-    }
-    auto name = std::filesystem::path(source).filename().string();
-    return encrypted ? name + ".gpg" : name + ".sig.asc";
-}
-
-std::string defaultDecryptedFileName(const std::string& source) {
-    if (source.empty()) {
-        return "fichier-ouvert";
-    }
-    auto path = std::filesystem::path(source);
-    auto name = path.filename().string();
-    for (const std::string suffix : {".gpg", ".pgp", ".asc"}) {
-        if (name.size() > suffix.size() && name.substr(name.size() - suffix.size()) == suffix) {
-            return name.substr(0, name.size() - suffix.size());
+    int handle(int event) override {
+        switch (event) {
+        case FL_PUSH:
+            dragColumn_ = columnBoundaryNear(Fl::event_x());
+            lastX_ = Fl::event_x();
+            return dragColumn_ >= 0 ? 1 : 0;
+        case FL_DRAG:
+            if (dragColumn_ < 0) {
+                return 0;
+            }
+            resizeColumns(Fl::event_x() - lastX_);
+            lastX_ = Fl::event_x();
+            return 1;
+        case FL_RELEASE:
+            if (dragColumn_ >= 0 && onResize_) {
+                onResize_();
+            }
+            dragColumn_ = -1;
+            updateCursor(Fl::event_x());
+            return 1;
+        case FL_ENTER:
+        case FL_MOVE:
+            updateCursor(Fl::event_x());
+            return 1;
+        case FL_LEAVE:
+            setDefaultCursor();
+            return 1;
+        default:
+            return Fl_Widget::handle(event);
         }
     }
-    return name + ".opened";
+
+private:
+    int columnBoundaryNear(int eventX) const {
+        if (std::abs(eventX - (x() + w())) <= 5) {
+            return PrivateKeyColumnCount - 1;
+        }
+        int boundary = x();
+        for (int i = 0; i < PrivateKeyColumnCount; ++i) {
+            boundary += widths_[static_cast<std::size_t>(i)];
+            if (std::abs(eventX - boundary) <= 5) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    void resizeColumns(int delta) {
+        if (delta == 0 || dragColumn_ < 0) {
+            return;
+        }
+        auto left = static_cast<std::size_t>(dragColumn_);
+        if (dragColumn_ == PrivateKeyColumnCount - 1) {
+            if (widths_[left] + delta < MinPrivateKeyColumnWidth || widths_[left] + delta > 800) {
+                return;
+            }
+            widths_[left] += delta;
+            redraw();
+            if (onResize_) {
+                onResize_();
+            }
+            return;
+        }
+        auto right = static_cast<std::size_t>(dragColumn_ + 1);
+        if (widths_[left] + delta < MinPrivateKeyColumnWidth ||
+            widths_[right] - delta < MinPrivateKeyColumnWidth) {
+            return;
+        }
+        widths_[left] += delta;
+        widths_[right] -= delta;
+        redraw();
+        if (onResize_) {
+            onResize_();
+        }
+    }
+
+    void updateCursor(int eventX) {
+        if (window()) {
+            window()->cursor(columnBoundaryNear(eventX) >= 0 ? FL_CURSOR_WE : FL_CURSOR_DEFAULT);
+        }
+    }
+
+    void setDefaultCursor() {
+        if (window()) {
+            window()->cursor(FL_CURSOR_DEFAULT);
+        }
+    }
+
+    std::array<int, 7>& widths_;
+    std::vector<std::string> labels_;
+    std::function<void()> onResize_;
+    int dragColumn_ = -1;
+    int lastX_ = 0;
+};
+
+std::string publicExportFileName(const GpgKey& key) {
+    auto display = displayNameFromUid(key.uid);
+    std::replace_if(display.begin(), display.end(), [](unsigned char c) {
+        return !(std::isalnum(c) || c == '-' || c == '_');
+    }, '_');
+    if (display.empty()) {
+        display = "SealKey";
+    }
+    return display + "_" + shortFingerprint(key.fingerprint) + "_GPG_PUB.asc";
 }
 
-std::string fileKindForPath(const std::string& path) {
-    auto extension = std::filesystem::path(path).extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    if (extension == ".gpg" || extension == ".pgp") {
-        return "Fichier probablement chiffré";
+std::string secretExportFileName(const GpgKey& key) {
+    auto name = publicExportFileName(key);
+    auto marker = name.find("_GPG_PUB.asc");
+    if (marker != std::string::npos) {
+        name.replace(marker, std::string("_GPG_PUB.asc").size(), "_GPG_PRIVATE.asc");
     }
-    if (extension == ".sig") {
-        return "Signature détachée";
-    }
-    if (extension == ".asc") {
-        return "ASCII armor : signature, clé publique ou fichier chiffré";
-    }
-    return "Type non reconnu automatiquement";
+    return name;
 }
 
-bool fileContainsMarker(const std::string& path, const std::string& marker) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        return false;
+struct CreateKeyRequest {
+    bool accepted = false;
+    std::string name;
+    std::string email;
+    std::string comment;
+    std::string keyProfileId = "default";
+    std::string keyProfileLabel = "Défaut GPG";
+    bool requiresEncryptionSubkey = false;
+    std::string expires = "2y";
+    int ownerTrust = 5;
+};
+
+std::string validitySuffix(int unitIndex) {
+    switch (unitIndex) {
+    case 0:
+        return "y";
+    case 1:
+        return "m";
+    default:
+        return "d";
     }
-    std::string data(4096, '\0');
-    input.read(data.data(), static_cast<std::streamsize>(data.size()));
-    data.resize(static_cast<std::size_t>(input.gcount()));
-    return data.find(marker) != std::string::npos;
 }
 
-std::string makePackageDirectoryName() {
-    auto now = std::chrono::system_clock::now();
-    auto time = std::chrono::system_clock::to_time_t(now);
+std::string previewExpirationDate(int amount, int unitIndex) {
+    if (amount <= 0) {
+        return "Aucune expiration";
+    }
+    auto now = std::time(nullptr);
     std::tm tm{};
 #ifdef _WIN32
-    localtime_s(&tm, &time);
+    localtime_s(&tm, &now);
 #else
-    localtime_r(&time, &tm);
+    localtime_r(&now, &tm);
 #endif
-    std::ostringstream output;
-    output << "SealKey_export_" << std::put_time(&tm, "%Y-%m-%d_%H%M%S");
-    return output.str();
+    if (unitIndex == 0) {
+        tm.tm_year += amount;
+    } else if (unitIndex == 1) {
+        tm.tm_mon += amount;
+    } else {
+        tm.tm_mday += amount;
+    }
+    auto future = std::mktime(&tm);
+    return formatGpgTimestampDate(std::to_string(static_cast<long long>(future)));
 }
 
-std::string diagnosticText(const GpgProcessResult& result);
+struct CreateKeyDialogContext {
+    Fl_Window* dialog = nullptr;
+    CreateKeyRequest* request = nullptr;
+    Fl_Int_Input* validityInput = nullptr;
+    Fl_Choice* validityUnitChoice = nullptr;
+    Fl_Output* validityPreview = nullptr;
+};
 
-std::string readableGpgError(const GpgProcessResult& result) {
-    auto text = diagnosticText(result);
-    auto lowered = text;
-    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    if (lowered.find("no secret key") != std::string::npos || lowered.find("secret key not available") != std::string::npos) {
-        return "Aucune clé privée compatible n'a été trouvée.";
+int validityAmount(const Fl_Int_Input* input) {
+    auto value = input && input->value() ? trim(input->value()) : "";
+    if (value.empty()) {
+        return -1;
     }
-    if (lowered.find("no public key") != std::string::npos || lowered.find("can't check signature") != std::string::npos) {
-        return "Impossible de vérifier la signature : la clé publique de l'expéditeur n'est pas connue.";
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return -1;
     }
-    if (lowered.find("bad passphrase") != std::string::npos || lowered.find("cancelled") != std::string::npos) {
-        return "La phrase de passe a été refusée ou l'opération a été annulée.";
-    }
-    if (lowered.find("bad signature") != std::string::npos) {
-        return "Signature invalide. Le fichier a peut-être été modifié, ou la signature ne correspond pas à ce fichier.";
-    }
-    if (lowered.find("permission denied") != std::string::npos) {
-        return "Permission refusée pour lire ou écrire un fichier.";
-    }
-    return text.empty() ? "L'opération GPG a échoué." : text;
 }
 
-void setOperationResult(Fl_Text_Buffer* buffer, const OperationResult& result) {
-    std::ostringstream text;
-    text << result.userMessage;
-    if (!result.outputFiles.empty()) {
-        text << "\n\nFichiers produits :";
-        for (const auto& file : result.outputFiles) {
-            text << "\n- " << file;
+void updateValidityPreview(CreateKeyDialogContext* context) {
+    if (!context || !context->validityPreview || !context->validityInput || !context->validityUnitChoice) {
+        return;
+    }
+    auto amount = validityAmount(context->validityInput);
+    if (amount < 0) {
+        context->validityPreview->value("Saisir un entier");
+        return;
+    }
+    context->validityPreview->value(previewExpirationDate(amount, context->validityUnitChoice->value()).c_str());
+}
+
+CreateKeyRequest showCreateKeyDialog(const std::vector<KeyGenerationProfile>& profiles) {
+    CreateKeyRequest request;
+    auto* dialog = new Fl_Window(660, 302, "Créer une nouvelle clé privée");
+    dialog->set_modal();
+    int x = 18;
+    int y = 20;
+    constexpr int localLabelWidth = 155;
+    auto addDialogLabel = [&](const char* text) {
+        auto* label = new Fl_Box(x, y, localLabelWidth, RowHeight, text);
+        label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    };
+
+    addDialogLabel("Nom");
+    auto* nameInput = new Fl_Input(x + localLabelWidth, y, 320, RowHeight);
+    y += RowHeight + 10;
+    addDialogLabel("Adresse électronique");
+    auto* emailInput = new Fl_Input(x + localLabelWidth, y, 320, RowHeight);
+    y += RowHeight + 10;
+    addDialogLabel("Commentaire");
+    auto* commentInput = new Fl_Input(x + localLabelWidth, y, 320, RowHeight);
+    y += RowHeight + 10;
+    addDialogLabel("Type de clé");
+    auto* keyProfileChoice = new Fl_Choice(x + localLabelWidth, y, 300, RowHeight);
+    for (const auto& profile : profiles) {
+        keyProfileChoice->add(profile.label.c_str());
+    }
+    keyProfileChoice->value(0);
+    y += RowHeight + 10;
+    addDialogLabel("Validité");
+    auto* validityInput = new Fl_Int_Input(x + localLabelWidth, y, 70, RowHeight);
+    validityInput->value("2");
+    auto* validityUnitChoice = new Fl_Choice(validityInput->x() + validityInput->w() + 8, y, 105, RowHeight);
+    validityUnitChoice->add("années|mois|jours");
+    validityUnitChoice->value(0);
+    auto* validityPreview = new Fl_Output(validityUnitChoice->x() + validityUnitChoice->w() + 8, y, 160, RowHeight);
+    validityPreview->readonly(1);
+    y += RowHeight + 10;
+    addDialogLabel("Niveau de confiance");
+    auto* trustChoice = new Fl_Choice(x + localLabelWidth, y, 220, RowHeight);
+    trustChoice->add("Inconnu|Marginal|Complet|Ultime");
+    trustChoice->value(3);
+    y += RowHeight + 22;
+    auto* cancelButton = new Fl_Button(440, y, 90, RowHeight, "Annuler");
+    auto* createButton = new Fl_Button(540, y, 90, RowHeight, "Créer");
+    CreateKeyDialogContext dialogContext{dialog, &request, validityInput, validityUnitChoice, validityPreview};
+
+    cancelButton->callback([](Fl_Widget*, void* data) {
+        static_cast<Fl_Window*>(data)->hide();
+    }, dialog);
+    createButton->callback([](Fl_Widget*, void* data) {
+        auto* context = static_cast<CreateKeyDialogContext*>(data);
+        auto amount = validityAmount(context->validityInput);
+        if (amount < 0) {
+            context->validityPreview->value("Entier obligatoire");
+            return;
         }
+        context->request->accepted = true;
+        context->dialog->hide();
+    }, &dialogContext);
+    auto previewCallback = [](Fl_Widget*, void* data) {
+        updateValidityPreview(static_cast<CreateKeyDialogContext*>(data));
+    };
+    validityInput->when(FL_WHEN_CHANGED);
+    validityInput->callback(previewCallback, &dialogContext);
+    validityUnitChoice->callback(previewCallback, &dialogContext);
+    updateValidityPreview(&dialogContext);
+
+    dialog->end();
+    dialog->show();
+    while (dialog->shown()) {
+        Fl::wait();
     }
-    if (!result.warnings.empty()) {
-        text << "\n\nAvertissements :";
-        for (const auto& warning : result.warnings) {
-            text << "\n- " << warning;
-        }
+    request.name = trim(valueOf(nameInput));
+    request.email = trim(valueOf(emailInput));
+    request.comment = trim(valueOf(commentInput));
+    auto profileIndex = keyProfileChoice->value();
+    if (profileIndex >= 0 && static_cast<std::size_t>(profileIndex) < profiles.size()) {
+        request.keyProfileId = profiles[static_cast<std::size_t>(profileIndex)].id;
+        request.keyProfileLabel = profiles[static_cast<std::size_t>(profileIndex)].label;
+        request.requiresEncryptionSubkey = profiles[static_cast<std::size_t>(profileIndex)].requiresEncryptionSubkey;
     }
-    if (!result.suggestedNextActions.empty()) {
-        text << "\n\nActions proposées :";
-        for (const auto& action : result.suggestedNextActions) {
-            text << "\n- " << action;
-        }
+    auto amount = validityAmount(validityInput);
+    if (amount < 0) {
+        request.expires.clear();
+    } else if (amount == 0) {
+        request.expires = "0";
+    } else {
+        request.expires = std::to_string(amount) + validitySuffix(validityUnitChoice->value());
     }
-    if (!result.technicalMessage.empty()) {
-        text << "\n\nDétails techniques GPG :\n" << result.technicalMessage;
+    switch (trustChoice->value()) {
+    case 1:
+        request.ownerTrust = 3;
+        break;
+    case 2:
+        request.ownerTrust = 4;
+        break;
+    case 3:
+        request.ownerTrust = 5;
+        break;
+    default:
+        request.ownerTrust = 0;
+        break;
     }
-    buffer->text(text.str().c_str());
+    delete dialog;
+    return request;
 }
 
-std::string bufferText(Fl_Text_Buffer* buffer) {
-    if (!buffer) {
-        return {};
-    }
-    char* raw = buffer->text();
-    if (!raw) {
-        return {};
-    }
-    std::string text(raw);
-    std::free(raw);
-    return text;
+void makeLabel(int x, int y, const char* text) {
+    auto* label = new Fl_Box(x, y, LabelWidth - 10, RowHeight, text);
+    label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 }
 
-std::string diagnosticText(const GpgProcessResult& result) {
-    if (!result.errorMessage.empty()) {
-        return result.errorMessage;
-    }
-    if (!result.standardError.empty()) {
-        return result.standardError;
-    }
-    return result.standardOutput;
+Fl_Text_Display* makeResultDisplay(int x, int y, int w, int h, Fl_Text_Buffer*& buffer) {
+    buffer = new Fl_Text_Buffer();
+    auto* display = new Fl_Text_Display(x, y, w, h);
+    display->buffer(buffer);
+    return display;
 }
 
-bool windowLooksVisible(int x, int y, int width, int height) {
-    if (x < 0 || y < 0 || width <= 0 || height <= 0) {
-        return false;
+bool confirmKeyAction(const char* title,
+                      const std::string& question,
+                      const std::string& keyText,
+                      const std::string& warning,
+                      const char* actionLabel) {
+    struct DialogState {
+        bool accepted = false;
+        Fl_Window* dialog = nullptr;
+    } state;
+
+    auto* dialog = new Fl_Window(660, warning.empty() ? 210 : 245, title);
+    state.dialog = dialog;
+    dialog->set_modal();
+    int x = 18;
+    int y = 20;
+    auto* questionBox = new Fl_Box(x, y, dialog->w() - 36, RowHeight, question.c_str());
+    questionBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    y += RowHeight + 8;
+    auto* keyOutput = new Fl_Multiline_Output(x, y, dialog->w() - 36, 82);
+    keyOutput->value(keyText.c_str());
+    keyOutput->readonly(1);
+    y += 92;
+    if (!warning.empty()) {
+        auto* warningBox = new Fl_Box(x, y, dialog->w() - 36, RowHeight, warning.c_str());
+        warningBox->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        y += RowHeight + 8;
     }
-    int screenCount = Fl::screen_count();
-    for (int i = 0; i < screenCount; ++i) {
-        int sx = 0;
-        int sy = 0;
-        int sw = 0;
-        int sh = 0;
-        Fl::screen_xywh(sx, sy, sw, sh, i);
-        const int overlapLeft = std::max(x, sx);
-        const int overlapTop = std::max(y, sy);
-        const int overlapRight = std::min(x + width, sx + sw);
-        const int overlapBottom = std::min(y + height, sy + sh);
-        if (overlapRight - overlapLeft >= 80 && overlapBottom - overlapTop >= 80) {
-            return true;
-        }
+    auto* cancelButton = new Fl_Button(dialog->w() - 220, y, 95, RowHeight, "Annuler");
+    auto* deleteButton = new Fl_Button(dialog->w() - 115, y, 95, RowHeight, actionLabel);
+    cancelButton->callback([](Fl_Widget*, void* data) {
+        static_cast<DialogState*>(data)->dialog->hide();
+    }, &state);
+    deleteButton->callback([](Fl_Widget*, void* data) {
+        auto* dialogState = static_cast<DialogState*>(data);
+        dialogState->accepted = true;
+        dialogState->dialog->hide();
+    }, &state);
+    dialog->end();
+    dialog->show();
+    while (dialog->shown()) {
+        Fl::wait();
     }
-    return false;
+    bool accepted = state.accepted;
+    delete dialog;
+    return accepted;
 }
 }
 
 MainWindow::MainWindow()
-    : Fl_Window(980, 720, AppInfo::FullName), settings_(settingsService_.load()) {
+    : Fl_Window(AppSettings{}.window.width,
+                AppSettings{}.window.height,
+                AppInfo::FullName) {
+    settings_ = settingsService_.load();
+    settings_.options.encryptedFileExtension =
+        SealKeyPaths::normalizeExtension(settings_.options.encryptedFileExtension, "gpg");
+    settings_.options.signatureFileExtension =
+        SealKeyPaths::normalizeExtension(settings_.options.signatureFileExtension, "sig");
+    loadPrivateKeyColumnWidths();
+    loadRecipientKeyColumnWidths();
+    resize(settings_.window.x >= 0 ? settings_.window.x : x(),
+           settings_.window.y >= 0 ? settings_.window.y : y(),
+           settings_.window.width,
+           settings_.window.height);
+    callback(onClose, this);
     buildInterface();
     loadInitialState();
-    callback(onClose, this);
 }
 
 MainWindow::~MainWindow() {
-    delete sendResultBuffer_;
-    delete receiveResultBuffer_;
-    delete packageResultBuffer_;
-    delete textSourceBuffer_;
-    delete textResultBuffer_;
-    delete logBuffer_;
+    delete encryptResultBuffer_;
+    delete decryptResultBuffer_;
+    delete signResultBuffer_;
+    delete verifyResultBuffer_;
 }
 
 void MainWindow::buildInterface() {
-    begin();
     tabs_ = new Fl_Tabs(Margin, Margin, w() - Margin * 2, h() - Margin * 2);
     tabs_->callback([](Fl_Widget*, void* data) {
-        static_cast<MainWindow*>(data)->updateLastTab();
-    }, this);
-
-    homeTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Accueil");
-    homeTab_->begin();
-    int x = homeTab_->x() + Margin;
-    int y = homeTab_->y() + Margin;
-    int contentWidth = homeTab_->w() - Margin * 2;
-    new Fl_Box(x, y, contentWidth, RowHeight, "Que voulez-vous faire ?");
-    y += RowHeight + 12;
-    auto protectButton = new Fl_Button(x, y, 280, 40, "Protéger un fichier pour quelqu'un");
-    protectButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->goToTab(static_cast<MainWindow*>(data)->sendTab_); }, this);
-    auto openButton = new Fl_Button(x + 300, y, 240, 40, "Ouvrir un fichier protégé");
-    openButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->goToTab(static_cast<MainWindow*>(data)->receiveTab_); }, this);
-    y += 52;
-    auto signButton = new Fl_Button(x, y, 280, 36, "Signer un fichier");
-    signButton->callback([](Fl_Widget*, void* data) {
         auto* window = static_cast<MainWindow*>(data);
-        window->goToTab(window->sendTab_);
-        window->sendActionChoice_->value(1);
+        window->updateLastTab();
+        window->saveSettings();
     }, this);
-    auto verifyButton = new Fl_Button(x + 300, y, 240, 36, "Vérifier une signature");
-    verifyButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->goToTab(static_cast<MainWindow*>(data)->receiveTab_); }, this);
-    y += 48;
-    auto packageButton = new Fl_Button(x, y, 280, 36, "Préparer un dossier d'envoi");
-    packageButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->goToTab(static_cast<MainWindow*>(data)->packageTab_); }, this);
-    auto importButton = new Fl_Button(x + 300, y, 240, 36, "Importer une clé publique");
-    importButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->importPublicKey(); }, this);
-    y += 48;
-    auto exportHomeButton = new Fl_Button(x, y, 280, 36, "Exporter ma clé publique");
-    exportHomeButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->exportEncryptionPublicKey(); }, this);
-    auto settingsButton = new Fl_Button(x + 300, y, 115, 36, "Paramètres");
-    settingsButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->goToTab(static_cast<MainWindow*>(data)->configurationTab_); }, this);
-    auto keysButton = new Fl_Button(x + 425, y, 115, 36, "Clés");
-    keysButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->goToTab(static_cast<MainWindow*>(data)->keysTab_); }, this);
-    y += 54;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "État");
-    homeStatusOutput_ = new Fl_Output(x + LabelWidth, y, contentWidth - LabelWidth, RowHeight);
-    homeTab_->end();
 
-    sendTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Envoyer");
-    sendTab_->begin();
-    x = sendTab_->x() + Margin;
-    y = sendTab_->y() + Margin;
-    contentWidth = sendTab_->w() - Margin * 2;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Fichier");
-    sendSourceInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
-    auto sendSourceButton = new Fl_Button(sendSourceInput_->x() + sendSourceInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    sendSourceButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseSendSource(); }, this);
-    y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Action");
-    sendActionChoice_ = new Fl_Choice(x + LabelWidth, y, 240, RowHeight);
-    sendActionChoice_->add("Chiffrer");
-    sendActionChoice_->add("Signer");
-    sendActionChoice_->add("Chiffrer et signer");
-    sendActionChoice_->value(2);
-    y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Destinataire");
-    sendRecipientBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 120);
+    encryptTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Crypter");
+    encryptTab_->begin();
+    int x = encryptTab_->x() + Margin;
+    int y = encryptTab_->y() + Margin;
+    int contentWidth = encryptTab_->w() - Margin * 2;
+    makeLabel(x, y, "Fichier");
+    encryptFileInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - ButtonWidth - 10, RowHeight);
+    encryptFileInput_->readonly(1);
+    auto* chooseEncrypt = new Fl_Button(encryptFileInput_->x() + encryptFileInput_->w() + 8, y, ButtonWidth, RowHeight, "Choisir");
+    chooseEncrypt->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseEncryptFile(); }, this);
+    y += RowHeight + 12;
+    makeLabel(x, y, "Destinataire");
+    encryptRecipientBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 150);
+    encryptRecipientBrowser_->callback([](Fl_Widget*, void* data) {
+        auto* window = static_cast<MainWindow*>(data);
+        if (auto* key = window->selectedEncryptRecipientKey()) {
+            window->recipientsBrowser_->value(window->encryptRecipientBrowser_->value());
+            window->settings_.keys.encryptionFingerprint = key->fingerprint;
+            window->saveSettings();
+        }
+        window->updateActions();
+    }, this);
+    y += 162;
+    encryptSignCheck_ = new Fl_Check_Button(x + LabelWidth, y, 220, RowHeight, "Signer avec ma clé");
+    encryptSignCheck_->callback([](Fl_Widget*, void* data) {
+        auto* window = static_cast<MainWindow*>(data);
+        window->settings_.options.encryptAndSign = window->encryptSignCheck_->value() != 0;
+        window->saveSettings();
+        window->updateActions();
+    }, this);
+    y += RowHeight + 12;
+    encryptButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Crypter");
+    encryptButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeEncrypt(); }, this);
+    y += RowHeight + 12;
+    makeResultDisplay(x, y, contentWidth, encryptTab_->h() - (y - encryptTab_->y()) - Margin, encryptResultBuffer_);
+    encryptTab_->end();
+
+    decryptTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Décrypter");
+    decryptTab_->begin();
+    x = decryptTab_->x() + Margin;
+    y = decryptTab_->y() + Margin;
+    contentWidth = decryptTab_->w() - Margin * 2;
+    makeLabel(x, y, "Fichier");
+    decryptFileInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - ButtonWidth - 10, RowHeight);
+    decryptFileInput_->readonly(1);
+    auto* chooseDecrypt = new Fl_Button(decryptFileInput_->x() + decryptFileInput_->w() + 8, y, ButtonWidth, RowHeight, "Choisir");
+    chooseDecrypt->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseDecryptFile(); }, this);
+    y += RowHeight + 12;
+    makeLabel(x, y, "Signataires");
+    decryptSignersBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 120);
+    decryptSignersBrowser_->column_char('\t');
+    decryptSignersBrowser_->column_widths(SignerColumnWidths);
+    decryptSignersBrowser_->add("Aucune signature");
     y += 132;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Sortie");
-    sendOutputInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
-    auto sendOutputButton = new Fl_Button(sendOutputInput_->x() + sendOutputInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    sendOutputButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseSendOutput(); }, this);
+    decryptButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Décrypter");
+    decryptButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeDecrypt(); }, this);
     y += RowHeight + 12;
-    auto sendExecuteButton = new Fl_Button(x + LabelWidth, y, 180, RowHeight, "Voir résumé et exécuter");
-    sendExecuteButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeSendOperation(); }, this);
-    y += RowHeight + 10;
-    sendResultBuffer_ = new Fl_Text_Buffer();
-    sendResultDisplay_ = new Fl_Text_Display(x, y, contentWidth, sendTab_->h() - y + sendTab_->y() - Margin);
-    sendResultDisplay_->buffer(sendResultBuffer_);
-    sendTab_->end();
+    makeResultDisplay(x, y, contentWidth, decryptTab_->h() - (y - decryptTab_->y()) - Margin, decryptResultBuffer_);
+    decryptTab_->end();
 
-    receiveTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Recevoir");
-    receiveTab_->begin();
-    x = receiveTab_->x() + Margin;
-    y = receiveTab_->y() + Margin;
-    contentWidth = receiveTab_->w() - Margin * 2;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Fichier reçu");
-    receiveFileInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
-    auto receiveFileButton = new Fl_Button(receiveFileInput_->x() + receiveFileInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    receiveFileButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseReceiveFile(); }, this);
-    y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Détection");
-    receiveDetectedOutput_ = new Fl_Output(x + LabelWidth, y, contentWidth - LabelWidth, RowHeight);
-    y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Sortie");
-    receiveOutputInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
-    auto receiveOutputButton = new Fl_Button(receiveOutputInput_->x() + receiveOutputInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    receiveOutputButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseReceiveOutput(); }, this);
-    y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Original");
-    receiveOriginalInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
-    auto receiveOriginalButton = new Fl_Button(receiveOriginalInput_->x() + receiveOriginalInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    receiveOriginalButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseReceiveOriginal(); }, this);
+    signTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Signer");
+    signTab_->begin();
+    x = signTab_->x() + Margin;
+    y = signTab_->y() + Margin;
+    contentWidth = signTab_->w() - Margin * 2;
+    makeLabel(x, y, "Fichier");
+    signFileInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - ButtonWidth - 10, RowHeight);
+    signFileInput_->readonly(1);
+    auto* chooseSign = new Fl_Button(signFileInput_->x() + signFileInput_->w() + 8, y, ButtonWidth, RowHeight, "Choisir");
+    chooseSign->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseSignFile(); }, this);
     y += RowHeight + 12;
-    auto receiveExecuteButton = new Fl_Button(x + LabelWidth, y, 180, RowHeight, "Analyser / ouvrir");
-    receiveExecuteButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeReceiveOperation(); }, this);
-    y += RowHeight + 10;
-    receiveResultBuffer_ = new Fl_Text_Buffer();
-    receiveResultDisplay_ = new Fl_Text_Display(x, y, contentWidth, receiveTab_->h() - y + receiveTab_->y() - Margin);
-    receiveResultDisplay_->buffer(receiveResultBuffer_);
-    receiveTab_->end();
+    signButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Signer");
+    signButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeSign(); }, this);
+    y += RowHeight + 12;
+    makeResultDisplay(x, y, contentWidth, signTab_->h() - (y - signTab_->y()) - Margin, signResultBuffer_);
+    signTab_->end();
 
-    packageTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Préparer");
-    packageTab_->begin();
-    x = packageTab_->x() + Margin;
-    y = packageTab_->y() + Margin;
-    contentWidth = packageTab_->w() - Margin * 2;
-    auto addPackageButton = new Fl_Button(x, y, 150, RowHeight, "Ajouter fichier");
-    addPackageButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->addPackageFile(); }, this);
-    auto clearPackageButton = new Fl_Button(x + 160, y, 130, RowHeight, "Vider la liste");
-    clearPackageButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->clearPackageFiles(); }, this);
-    y += RowHeight + 8;
-    packageFilesBrowser_ = new Fl_Hold_Browser(x, y, contentWidth, 120);
-    y += 132;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Action");
-    packageActionChoice_ = new Fl_Choice(x + LabelWidth, y, 240, RowHeight);
-    packageActionChoice_->add("Signer");
-    packageActionChoice_->add("Chiffrer");
-    packageActionChoice_->add("Chiffrer et signer");
-    packageActionChoice_->value(2);
-    packageIncludePublicKeyCheck_ = new Fl_Check_Button(x + LabelWidth + 260, y, 260, RowHeight, "Inclure ma clé publique");
-    packageIncludePublicKeyCheck_->value(1);
+    verifyTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Vérifier");
+    verifyTab_->begin();
+    x = verifyTab_->x() + Margin;
+    y = verifyTab_->y() + Margin;
+    contentWidth = verifyTab_->w() - Margin * 2;
+    makeLabel(x, y, "Fichier");
+    verifyFileInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - ButtonWidth - 10, RowHeight);
+    verifyFileInput_->readonly(1);
+    auto* chooseVerifyFile = new Fl_Button(verifyFileInput_->x() + verifyFileInput_->w() + 8, y, ButtonWidth, RowHeight, "Choisir");
+    chooseVerifyFile->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseVerifyFile(); }, this);
     y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Destinataire");
-    packageRecipientBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 90);
-    y += 102;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Dossier sortie");
-    packageOutputDirInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
-    auto packageOutputButton = new Fl_Button(packageOutputDirInput_->x() + packageOutputDirInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    packageOutputButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->choosePackageOutputDir(); }, this);
+    makeLabel(x, y, "Signature");
+    verifySignatureInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - ButtonWidth - 10, RowHeight);
+    verifySignatureInput_->readonly(1);
+    auto* chooseVerifySig = new Fl_Button(verifySignatureInput_->x() + verifySignatureInput_->w() + 8, y, ButtonWidth, RowHeight, "Choisir");
+    chooseVerifySig->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseVerifySignature(); }, this);
     y += RowHeight + 12;
-    auto packageExecuteButton = new Fl_Button(x + LabelWidth, y, 170, RowHeight, "Créer le dossier");
-    packageExecuteButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executePackageOperation(); }, this);
-    y += RowHeight + 10;
-    packageResultBuffer_ = new Fl_Text_Buffer();
-    packageResultDisplay_ = new Fl_Text_Display(x, y, contentWidth, packageTab_->h() - y + packageTab_->y() - Margin);
-    packageResultDisplay_->buffer(packageResultBuffer_);
-    packageTab_->end();
+    makeLabel(x, y, "Signataires");
+    verifySignersBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 110);
+    verifySignersBrowser_->column_char('\t');
+    verifySignersBrowser_->column_widths(SignerColumnWidths);
+    y += 122;
+    verifyButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Vérifier");
+    verifyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeVerify(); }, this);
+    y += RowHeight + 12;
+    makeResultDisplay(x, y, contentWidth, verifyTab_->h() - (y - verifyTab_->y()) - Margin, verifyResultBuffer_);
+    verifyTab_->end();
 
     configurationTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Configuration");
     configurationTab_->begin();
     x = configurationTab_->x() + Margin;
     y = configurationTab_->y() + Margin;
     contentWidth = configurationTab_->w() - Margin * 2;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Exécutable gpg");
-    gpgPathInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 330, RowHeight);
-    auto chooseButton = new Fl_Button(gpgPathInput_->x() + gpgPathInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    chooseButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseGpgExecutable(); }, this);
-    auto detectButton = new Fl_Button(chooseButton->x() + chooseButton->w() + 8, y, 100, RowHeight, "Détecter");
-    detectButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->autoDetectGpg(); }, this);
-    auto testButton = new Fl_Button(detectButton->x() + detectButton->w() + 8, y, 90, RowHeight, "Tester");
-    testButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->testGpg(); }, this);
+    makeLabel(x, y, "Chemin de l'exécutable GPG");
+    gpgPathInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 286, RowHeight);
+    gpgPathInput_->when(FL_WHEN_CHANGED);
+    gpgPathInput_->callback([](Fl_Widget*, void* data) {
+        auto* window = static_cast<MainWindow*>(data);
+        window->settings_.gpg.executablePath = valueOf(window->gpgPathInput_);
+        window->gpgWorks_ = false;
+        window->updateStatus("Chemin GPG modifié. Cliquez sur Tester.");
+        window->saveSettings();
+        window->updateActions();
+    }, this);
+    auto* chooseGpg = new Fl_Button(gpgPathInput_->x() + gpgPathInput_->w() + 8, y, 86, RowHeight, "Choisir");
+    chooseGpg->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseGpgExecutable(); }, this);
+    auto* detectGpg = new Fl_Button(chooseGpg->x() + chooseGpg->w() + 8, y, 86, RowHeight, "Détecter");
+    detectGpg->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->autoDetectGpg(); }, this);
+    auto* testGpgButton = new Fl_Button(detectGpg->x() + detectGpg->w() + 8, y, 86, RowHeight, "Tester");
+    testGpgButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->testGpg(); }, this);
+    y += RowHeight + 22;
+    constexpr int PrivateKeysGroupHeight = 220;
+    auto* privateKeysGroup = new Fl_Group(x, y, contentWidth, PrivateKeysGroupHeight, "Mes clés privées");
+    privateKeysGroup->box(FL_ENGRAVED_BOX);
+    privateKeysGroup->align(FL_ALIGN_TOP | FL_ALIGN_LEFT);
+    privateKeysGroup->begin();
+    int groupX = privateKeysGroup->x() + 12;
+    int groupY = privateKeysGroup->y() + 24;
+    int groupWidth = privateKeysGroup->w() - 24;
+    makeLabel(groupX, groupY, "Mes clés");
+    auto browserX = groupX + LabelWidth;
+    privateKeyHeader_ = new ColumnHeader(browserX,
+                                         groupY,
+                                         groupWidth - LabelWidth,
+                                         18,
+                                         privateKeyColumnWidths_,
+                                         {"Nom", "Email", "Court", "Fingerprint", "Cap.", "Expiration"},
+                                         [this]() {
+                                             if (myKeyBrowser_) {
+                                                 myKeyBrowser_->column_widths(privateKeyColumnWidths_.data());
+                                                 myKeyBrowser_->redraw();
+                                             }
+                                             savePrivateKeyColumnWidths();
+                                         });
+    groupY += 20;
+    myKeyBrowser_ = new Fl_Hold_Browser(browserX, groupY, groupWidth - LabelWidth, 80);
+    myKeyBrowser_->column_char('\t');
+    myKeyBrowser_->column_widths(privateKeyColumnWidths_.data());
+    myKeyBrowser_->callback([](Fl_Widget*, void* data) {
+        auto* window = static_cast<MainWindow*>(data);
+        window->updateActions();
+    }, this);
+    groupY += 90;
+    setPreferredKeyButton_ = new Fl_Button(groupX + LabelWidth, groupY, 135, RowHeight, "Ma clé préférée");
+    setPreferredKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->setPreferredPrivateKey(); }, this);
+    auto* createKey = new Fl_Button(setPreferredKeyButton_->x() + setPreferredKeyButton_->w() + 8, groupY, 70, RowHeight, "Créer");
+    createKey->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->createPrivateKey(); }, this);
+    infoPrivateKeyButton_ = new Fl_Button(createKey->x() + createKey->w() + 8, groupY, 58, RowHeight, "Info");
+    infoPrivateKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->showSelectedPrivateKeyInfo(); }, this);
+    deletePrivateKeyButton_ = new Fl_Button(infoPrivateKeyButton_->x() + infoPrivateKeyButton_->w() + 8, groupY, 92, RowHeight, "Supprimer");
+    deletePrivateKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->deleteSelectedPrivateKey(); }, this);
+    exportMyKeyButton_ = new Fl_Button(deletePrivateKeyButton_->x() + deletePrivateKeyButton_->w() + 8, groupY, 150, RowHeight, "Exporter clé publique");
+    exportMyKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->exportMyPublicKey(); }, this);
+    exportPrivateKeyButton_ = new Fl_Button(exportMyKeyButton_->x() + exportMyKeyButton_->w() + 8, groupY, 145, RowHeight, "Exporter clé privée");
+    exportPrivateKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->exportPrivateKey(); }, this);
+    groupY += RowHeight + 8;
+    makeLabel(groupX, groupY, "Ma clé préférée");
+    preferredKeyOutput_ = new Fl_Output(groupX + LabelWidth, groupY, groupWidth - LabelWidth, RowHeight);
+    preferredKeyOutput_->readonly(1);
+    privateKeysGroup->end();
+
+    y += PrivateKeysGroupHeight + 22;
+    constexpr int RecipientsGroupHeight = 178;
+    auto* recipientsGroup = new Fl_Group(x, y, contentWidth, RecipientsGroupHeight, "Mes destinataires");
+    recipientsGroup->box(FL_ENGRAVED_BOX);
+    recipientsGroup->align(FL_ALIGN_TOP | FL_ALIGN_LEFT);
+    recipientsGroup->begin();
+    groupX = recipientsGroup->x() + 12;
+    groupY = recipientsGroup->y() + 24;
+    groupWidth = recipientsGroup->w() - 24;
+    makeLabel(groupX, groupY, "Destinataires");
+    browserX = groupX + LabelWidth;
+    recipientKeyHeader_ = new ColumnHeader(browserX,
+                                           groupY,
+                                           groupWidth - LabelWidth,
+                                           18,
+                                           recipientKeyColumnWidths_,
+                                           {"Nom", "Email", "Court", "Fingerprint", "Cap.", "Expiration"},
+                                           [this]() {
+                                               if (recipientsBrowser_) {
+                                                   recipientsBrowser_->column_widths(recipientKeyColumnWidths_.data());
+                                                   recipientsBrowser_->redraw();
+                                               }
+                                               saveRecipientKeyColumnWidths();
+                                           });
+    groupY += 20;
+    recipientsBrowser_ = new Fl_Hold_Browser(browserX, groupY, groupWidth - LabelWidth, 76);
+    recipientsBrowser_->column_char('\t');
+    recipientsBrowser_->column_widths(recipientKeyColumnWidths_.data());
+    recipientsBrowser_->callback([](Fl_Widget*, void* data) {
+        auto* window = static_cast<MainWindow*>(data);
+        window->encryptRecipientBrowser_->value(window->recipientsBrowser_->value());
+        if (auto* key = window->selectedConfigRecipientKey()) {
+            window->settings_.keys.encryptionFingerprint = key->fingerprint;
+            window->saveSettings();
+        }
+        window->updateActions();
+    }, this);
+    groupY += 86;
+    auto* importRecipient = new Fl_Button(groupX + LabelWidth, groupY, 210, RowHeight, "Ajouter la clé d'un destinataire");
+    importRecipient->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->importRecipientKey(); }, this);
+    exportRecipientButton_ = new Fl_Button(importRecipient->x() + importRecipient->w() + 8, groupY, 210, RowHeight, "Exporter la clé du destinataire");
+    exportRecipientButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->exportSelectedRecipientKey(); }, this);
+    deleteRecipientButton_ = new Fl_Button(exportRecipientButton_->x() + exportRecipientButton_->w() + 8, groupY, 100, RowHeight, "Supprimer");
+    deleteRecipientButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->deleteSelectedRecipientKey(); }, this);
+    recipientsGroup->end();
+
+    y += RecipientsGroupHeight + 12;
+    makeLabel(x, y, "Extension du fichier chiffré");
+    encryptedExtensionInput_ = new Fl_Input(x + LabelWidth, y, 140, RowHeight);
+    encryptedExtensionInput_->callback([](Fl_Widget*, void* data) {
+        static_cast<MainWindow*>(data)->normalizeAndSaveEncryptedExtension();
+    }, this);
+    encryptedExtensionInput_->when(FL_WHEN_ENTER_KEY | FL_WHEN_RELEASE);
     y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Résultat");
-    gpgStatusOutput_ = new Fl_Output(x + LabelWidth, y, contentWidth - LabelWidth - 140, RowHeight);
-    auto reloadButton = new Fl_Button(gpgStatusOutput_->x() + gpgStatusOutput_->w() + 8, y, 130, RowHeight, "Recharger clés");
-    reloadButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->reloadKeys(); }, this);
+    makeLabel(x, y, "Extension du fichier de signature");
+    signatureExtensionInput_ = new Fl_Input(x + LabelWidth, y, 140, RowHeight);
+    signatureExtensionInput_->callback([](Fl_Widget*, void* data) {
+        static_cast<MainWindow*>(data)->normalizeAndSaveSignatureExtension();
+    }, this);
+    signatureExtensionInput_->when(FL_WHEN_ENTER_KEY | FL_WHEN_RELEASE);
+    y += RowHeight + 12;
+    makeLabel(x, y, "État GPG");
+    gpgStatusOutput_ = new Fl_Output(x + LabelWidth, y, contentWidth - LabelWidth, RowHeight);
     configurationTab_->end();
-
-    keysTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Clés");
-    keysTab_->begin();
-    x = keysTab_->x() + Margin;
-    y = keysTab_->y() + Margin;
-    contentWidth = keysTab_->w() - Margin * 2;
-    int browserWidth = (contentWidth - 16) / 2;
-    new Fl_Box(x, y, browserWidth, RowHeight, "Clé de chiffrement");
-    new Fl_Box(x + browserWidth + 16, y, browserWidth, RowHeight, "Clé de signature");
-    y += RowHeight;
-    encryptionBrowser_ = new Fl_Hold_Browser(x, y, browserWidth, 300);
-    encryptionBrowser_->callback([](Fl_Widget*, void* data) {
-        auto* window = static_cast<MainWindow*>(data);
-        window->settings_.keys.encryptionFingerprint = window->selectedEncryptionFingerprint();
-        auto* key = window->selectedEncryptionKey();
-        window->encryptionFingerprintOutput_->value(key ? keyDetailText(*key, "Aucune clé de chiffrement sélectionnée").c_str()
-                                                        : "Aucune clé de chiffrement sélectionnée");
-        if (key && !keyWarningText(*key).empty()) {
-            window->appendLog("Avertissement sur la clé de chiffrement sélectionnée.");
-        }
-        window->saveSettings();
-    }, this);
-    signingBrowser_ = new Fl_Hold_Browser(x + browserWidth + 16, y, browserWidth, 300);
-    signingBrowser_->callback([](Fl_Widget*, void* data) {
-        auto* window = static_cast<MainWindow*>(data);
-        window->settings_.keys.signingFingerprint = window->selectedSigningFingerprint();
-        auto* key = window->selectedSigningKey();
-        window->signingFingerprintOutput_->value(key ? keyDetailText(*key, "Aucune clé de signature sélectionnée").c_str()
-                                                     : "Aucune clé de signature sélectionnée");
-        if (key && !keyWarningText(*key).empty()) {
-            window->appendLog("Avertissement sur la clé de signature sélectionnée.");
-        }
-        window->saveSettings();
-    }, this);
-    y += 312;
-    new Fl_Box(x, y, 110, RowHeight, "Empreinte");
-    encryptionFingerprintOutput_ = new Fl_Output(x + 110, y, browserWidth - 110, RowHeight);
-    new Fl_Box(x + browserWidth + 16, y, 110, RowHeight, "Empreinte");
-    signingFingerprintOutput_ = new Fl_Output(x + browserWidth + 126, y, browserWidth - 110, RowHeight);
-    y += RowHeight + 12;
-    auto exportButton = new Fl_Button(x, y, 220, RowHeight, "Exporter la clé publique");
-    exportButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->exportEncryptionPublicKey(); }, this);
-    keysTab_->end();
-
-    textTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Texte");
-    textTab_->begin();
-    x = textTab_->x() + Margin;
-    y = textTab_->y() + Margin;
-    contentWidth = textTab_->w() - Margin * 2;
-    textOperationChoice_ = new Fl_Choice(x, y, 150, RowHeight, "Opération");
-    textOperationChoice_->add("Chiffrer");
-    textOperationChoice_->add("Déchiffrer");
-    textOperationChoice_->add("Signer");
-    textOperationChoice_->add("Vérifier");
-    textOperationChoice_->value(0);
-    auto executeTextButton = new Fl_Button(x + 230, y, 100, RowHeight, "Exécuter");
-    executeTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeTextOperation(); }, this);
-    auto copyTextButton = new Fl_Button(executeTextButton->x() + executeTextButton->w() + 8, y, 130, RowHeight, "Copier résultat");
-    copyTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->copyTextResult(); }, this);
-    auto clearClipboardButton = new Fl_Button(copyTextButton->x() + copyTextButton->w() + 8, y, 150, RowHeight, "Vider presse-papiers");
-    clearClipboardButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->clearClipboard(); }, this);
-    auto clearTextButton = new Fl_Button(clearClipboardButton->x() + clearClipboardButton->w() + 8, y, 80, RowHeight, "Effacer");
-    clearTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->clearTextBuffers(); }, this);
-    auto saveTextButton = new Fl_Button(clearTextButton->x() + clearTextButton->w() + 8, y, 150, RowHeight, "Enregistrer résultat");
-    saveTextButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->saveTextResult(); }, this);
-    y += RowHeight + 12;
-    int editorHeight = (textTab_->h() - y + textTab_->y() - Margin * 2 - 28) / 2;
-    new Fl_Box(x, y, 80, RowHeight, "Source");
-    y += RowHeight;
-    textSourceBuffer_ = new Fl_Text_Buffer();
-    textSourceEditor_ = new Fl_Text_Editor(x, y, contentWidth, editorHeight);
-    textSourceEditor_->buffer(textSourceBuffer_);
-    y += editorHeight + 10;
-    new Fl_Box(x, y, 80, RowHeight, "Résultat");
-    y += RowHeight;
-    textResultBuffer_ = new Fl_Text_Buffer();
-    textResultDisplay_ = new Fl_Text_Display(x, y, contentWidth, editorHeight);
-    textResultDisplay_->buffer(textResultBuffer_);
-    textTab_->end();
-
-    filesTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Fichiers");
-    filesTab_->begin();
-    x = filesTab_->x() + Margin;
-    y = filesTab_->y() + Margin;
-    contentWidth = filesTab_->w() - Margin * 2;
-    fileOperationChoice_ = new Fl_Choice(x + LabelWidth, y, 220, RowHeight, "Opération");
-    fileOperationChoice_->add("Chiffrer");
-    fileOperationChoice_->add("Déchiffrer");
-    fileOperationChoice_->add("Signer détaché");
-    fileOperationChoice_->add("Vérifier signature détachée");
-    fileOperationChoice_->add("Vérifier fichier signé");
-    fileOperationChoice_->value(0);
-    y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Source");
-    fileSourceInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
-    auto chooseSourceButton = new Fl_Button(fileSourceInput_->x() + fileSourceInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    chooseSourceButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseFileSource(); }, this);
-    y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Destination");
-    fileDestinationInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 110, RowHeight);
-    auto chooseDestinationButton = new Fl_Button(fileDestinationInput_->x() + fileDestinationInput_->w() + 8, y, 100, RowHeight, "Choisir");
-    chooseDestinationButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseFileDestination(); }, this);
-    y += RowHeight + 10;
-    new Fl_Box(x, y, LabelWidth, RowHeight, "Signature");
-    fileSignatureInput_ = new Fl_Input(x + LabelWidth, y, contentWidth - LabelWidth - 220, RowHeight);
-    auto chooseSignatureOpenButton = new Fl_Button(fileSignatureInput_->x() + fileSignatureInput_->w() + 8, y, 100, RowHeight, "Ouvrir");
-    chooseSignatureOpenButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseSignatureFile(false); }, this);
-    auto chooseSignatureSaveButton = new Fl_Button(chooseSignatureOpenButton->x() + chooseSignatureOpenButton->w() + 8, y, 100, RowHeight, "Enregistrer");
-    chooseSignatureSaveButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseSignatureFile(true); }, this);
-    y += RowHeight + 14;
-    auto executeFileButton = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Exécuter");
-    executeFileButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeFileOperation(); }, this);
-    fileStatusOutput_ = new Fl_Output(executeFileButton->x() + executeFileButton->w() + 12, y, contentWidth - LabelWidth - executeFileButton->w() - 12, RowHeight);
-    filesTab_->end();
-
-    logTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Journal");
-    logTab_->begin();
-    auto clearLogButton = new Fl_Button(logTab_->x() + Margin, logTab_->y() + Margin, 130, RowHeight, "Effacer journal");
-    clearLogButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->clearLog(); }, this);
-    logBuffer_ = new Fl_Text_Buffer();
-    logDisplay_ = new Fl_Text_Display(logTab_->x() + Margin, logTab_->y() + Margin + RowHeight + 8, logTab_->w() - Margin * 2, logTab_->h() - Margin * 2 - RowHeight - 8);
-    logDisplay_->buffer(logBuffer_);
-    logTab_->end();
 
     tabs_->end();
     resizable(tabs_);
-    end();
+    size_range(1060, 720);
 }
 
 void MainWindow::loadInitialState() {
-    if (settings_.window.width > 0 && settings_.window.height > 0) {
-        size(settings_.window.width, settings_.window.height);
-    }
-    if (windowLooksVisible(settings_.window.x, settings_.window.y, settings_.window.width, settings_.window.height)) {
-        position(settings_.window.x, settings_.window.y);
-    }
-    if (settings_.window.lastTab == "keys") {
-        tabs_->value(keysTab_);
-    } else if (settings_.window.lastTab == "send") {
-        tabs_->value(sendTab_);
-    } else if (settings_.window.lastTab == "receive") {
-        tabs_->value(receiveTab_);
-    } else if (settings_.window.lastTab == "package") {
-        tabs_->value(packageTab_);
-    } else if (settings_.window.lastTab == "text") {
-        tabs_->value(textTab_);
-    } else if (settings_.window.lastTab == "files") {
-        tabs_->value(filesTab_);
-    } else if (settings_.window.lastTab == "log") {
-        tabs_->value(logTab_);
+    gpgPathInput_->value(settings_.gpg.executablePath.c_str());
+    encryptSignCheck_->value(settings_.options.encryptAndSign ? 1 : 0);
+    encryptedExtensionInput_->value(settings_.options.encryptedFileExtension.c_str());
+    signatureExtensionInput_->value(settings_.options.signatureFileExtension.c_str());
+    testGpg();
+    reloadKeys();
+
+    if (settings_.window.lastTab == "encrypt") {
+        tabs_->value(encryptTab_);
+    } else if (settings_.window.lastTab == "decrypt") {
+        tabs_->value(decryptTab_);
+    } else if (settings_.window.lastTab == "sign") {
+        tabs_->value(signTab_);
+    } else if (settings_.window.lastTab == "verify") {
+        tabs_->value(verifyTab_);
     } else {
-        tabs_->value(homeTab_);
+        tabs_->value(configurationTab_);
     }
-    updateGpgPath(settings_.gpg.executablePath, false);
-    if (!settings_.gpg.executablePath.empty()) {
-        testGpg();
-        reloadKeys();
-    } else {
-        updateStatus("Aucun exécutable gpg sélectionné.");
-    }
-    updateHomeStatus();
+    updateActions();
 }
 
 void MainWindow::saveSettings() {
-    settings_.window.x = x();
-    settings_.window.y = y();
-    settings_.window.width = w();
-    settings_.window.height = h();
-    settings_.window.state = "normal";
-    updateLastTab();
     settingsService_.save(settings_);
 }
 
-void MainWindow::updateHomeStatus() {
-    if (!homeStatusOutput_) {
-        return;
+void MainWindow::reloadKeys() {
+    std::string error;
+    auto allKeys = KeyStore(settings_.gpg.executablePath).listMergedKeys(&error);
+    recipientKeys_.clear();
+    signingKeys_.clear();
+    for (const auto& key : allKeys) {
+        if (key.canEncrypt && !key.revoked && !key.expired && !key.fingerprint.empty()) {
+            recipientKeys_.push_back(key);
+        }
+        if (key.hasSecretKey && key.canSign && !key.revoked && !key.expired && !key.fingerprint.empty()) {
+            signingKeys_.push_back(key);
+        }
     }
-    std::ostringstream status;
-    status << (settings_.gpg.executablePath.empty() ? "GPG non configuré" : "GPG configuré");
-    status << "  -  " << encryptionKeys_.size() << " destinataire(s)";
-    status << "  -  " << signingKeys_.size() << " identité(s) locale(s)";
-    if (!settings_.paths.lastOpenDir.empty()) {
-        status << "  -  Dernier dossier : " << settings_.paths.lastOpenDir;
+    if (settings_.keys.signingFingerprint.empty() && signingKeys_.size() == 1) {
+        settings_.keys.signingFingerprint = signingKeys_.front().fingerprint;
+        saveSettings();
     }
-    homeStatusOutput_->value(status.str().c_str());
+    populateKeyBrowsers();
+    restoreKeySelections();
+    if (!error.empty()) {
+        updateStatus(error);
+    }
 }
 
-void MainWindow::updateGpgPath(const std::string& path, bool saveNow) {
-    settings_.gpg.executablePath = path;
-    gpgPathInput_->value(path.c_str());
-    if (saveNow) {
-        saveSettings();
+void MainWindow::populateKeyBrowsers() {
+    encryptRecipientBrowser_->clear();
+    recipientsBrowser_->clear();
+    myKeyBrowser_->clear();
+    for (const auto& key : recipientKeys_) {
+        const auto label = keyLabel(key);
+        encryptRecipientBrowser_->add(label.c_str());
+        recipientsBrowser_->add(recipientKeyColumnLabel(key).c_str());
+    }
+    for (const auto& key : signingKeys_) {
+        myKeyBrowser_->add(privateKeyColumnLabel(key).c_str());
+    }
+}
+
+void MainWindow::restoreKeySelections() {
+    for (int i = 0; i < static_cast<int>(recipientKeys_.size()); ++i) {
+        if (recipientKeys_[i].fingerprint == settings_.keys.encryptionFingerprint) {
+            encryptRecipientBrowser_->value(i + 1);
+            recipientsBrowser_->value(i + 1);
+            break;
+        }
+    }
+    for (int i = 0; i < static_cast<int>(signingKeys_.size()); ++i) {
+        if (signingKeys_[i].fingerprint == settings_.keys.signingFingerprint) {
+            break;
+        }
+    }
+    updatePreferredKeyOutput();
+}
+
+void MainWindow::updateActions() {
+    const bool hasSigner = selectedSigningKey() != nullptr;
+    const bool hasListedSigner = selectedListedSigningKey() != nullptr;
+    const auto* configRecipient = selectedConfigRecipientKey();
+    const bool hasConfigRecipient = configRecipient != nullptr;
+    const bool canDeleteConfigRecipient = hasConfigRecipient && !configRecipient->hasSecretKey;
+    const bool encryptReady = fileExists(valueOf(encryptFileInput_)) && selectedEncryptRecipientKey() && gpgConfigured();
+    const bool signRequested = hasSigner && settings_.options.encryptAndSign;
+    encryptSignCheck_->value(signRequested ? 1 : 0);
+    encryptSignCheck_->activate();
+    if (!hasSigner) {
+        encryptSignCheck_->deactivate();
+    }
+    (encryptReady && (!signRequested || hasSigner)) ? encryptButton_->activate() : encryptButton_->deactivate();
+    (fileExists(valueOf(decryptFileInput_)) && gpgConfigured()) ? decryptButton_->activate() : decryptButton_->deactivate();
+    (fileExists(valueOf(signFileInput_)) && hasSigner && gpgConfigured()) ? signButton_->activate() : signButton_->deactivate();
+    (fileExists(valueOf(verifyFileInput_)) && fileExists(valueOf(verifySignatureInput_)) && gpgConfigured()) ? verifyButton_->activate()
+                                                                                                           : verifyButton_->deactivate();
+    hasListedSigner ? setPreferredKeyButton_->activate() : setPreferredKeyButton_->deactivate();
+    hasListedSigner ? infoPrivateKeyButton_->activate() : infoPrivateKeyButton_->deactivate();
+    hasListedSigner ? exportMyKeyButton_->activate() : exportMyKeyButton_->deactivate();
+    hasListedSigner ? exportPrivateKeyButton_->activate() : exportPrivateKeyButton_->deactivate();
+    hasListedSigner ? deletePrivateKeyButton_->activate() : deletePrivateKeyButton_->deactivate();
+    hasConfigRecipient ? exportRecipientButton_->activate() : exportRecipientButton_->deactivate();
+    canDeleteConfigRecipient ? deleteRecipientButton_->activate() : deleteRecipientButton_->deactivate();
+}
+
+void MainWindow::updateLastTab() {
+    auto* selected = tabs_->value();
+    if (selected == encryptTab_) {
+        settings_.window.lastTab = "encrypt";
+    } else if (selected == decryptTab_) {
+        settings_.window.lastTab = "decrypt";
+    } else if (selected == signTab_) {
+        settings_.window.lastTab = "sign";
+    } else if (selected == verifyTab_) {
+        settings_.window.lastTab = "verify";
+    } else {
+        settings_.window.lastTab = "configuration";
     }
 }
 
 void MainWindow::chooseGpgExecutable() {
     Fl_Native_File_Chooser chooser;
-    chooser.title("Choisir l'exécutable gpg");
+    chooser.title("Choisir l'exécutable GPG");
     chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
-    if (directoryExists(settings_.paths.lastOpenDir)) {
-        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    auto initialDirectory = existingDirectoryForFileChooser(valueOf(gpgPathInput_));
+    if (!initialDirectory.empty()) {
+        chooser.directory(initialDirectory.c_str());
     }
     if (chooser.show() == 0 && chooser.filename()) {
-        updateGpgPath(chooser.filename(), true);
-        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
+        settings_.gpg.executablePath = chooser.filename();
+        gpgPathInput_->value(settings_.gpg.executablePath.c_str());
         saveSettings();
         testGpg();
     }
@@ -693,1023 +1180,658 @@ void MainWindow::chooseGpgExecutable() {
 void MainWindow::autoDetectGpg() {
     auto detected = GpgExecutable::detect();
     if (detected.empty()) {
-        updateStatus("Aucun exécutable gpg valide détecté.");
-        appendLog("Détection automatique de gpg échouée.");
+        updateStatus("GPG n'a pas été détecté automatiquement.");
         return;
     }
-    updateGpgPath(detected, true);
-    updateStatus("Exécutable gpg détecté.");
-    appendLog("gpg détecté: " + detected);
+    settings_.gpg.executablePath = detected;
+    gpgPathInput_->value(detected.c_str());
+    saveSettings();
     testGpg();
 }
 
 void MainWindow::testGpg() {
-    updateGpgPath(gpgPathInput_->value() ? gpgPathInput_->value() : "", false);
-    auto test = GpgExecutable(settings_.gpg.executablePath).test();
-    if (test.valid) {
-        std::istringstream lines(test.versionText);
+    settings_.gpg.executablePath = valueOf(gpgPathInput_);
+    auto result = GpgExecutable(settings_.gpg.executablePath).test();
+    gpgWorks_ = result.valid;
+    if (result.valid) {
+        std::istringstream lines(result.versionText);
         std::string firstLine;
         std::getline(lines, firstLine);
-        updateStatus(firstLine.empty() ? "gpg valide." : firstLine);
-        appendLog("Test gpg réussi.");
-    } else {
-        auto message = test.errorText.empty() ? "Exécutable gpg invalide." : test.errorText;
-        updateStatus(message);
-        appendLog("Test gpg échoué: " + message);
-    }
-    saveSettings();
-}
-
-void MainWindow::reloadKeys() {
-    updateGpgPath(gpgPathInput_->value() ? gpgPathInput_->value() : "", true);
-    if (settings_.gpg.executablePath.empty()) {
-        updateStatus("Sélectionnez un exécutable gpg avant de charger les clés.");
-        return;
-    }
-    std::string errorText;
-    auto keys = KeyStore(settings_.gpg.executablePath).listMergedKeys(&errorText);
-    encryptionKeys_.clear();
-    signingKeys_.clear();
-    for (const auto& key : keys) {
-        if (key.canEncrypt) {
-            encryptionKeys_.push_back(key);
-        }
-        if (key.hasSecretKey && key.canSign) {
-            signingKeys_.push_back(key);
-        }
-    }
-    populateKeyBrowsers();
-    restoreKeySelections();
-    if (!errorText.empty()) {
-        updateStatus("Erreur lors du chargement des clés.");
-        appendLog("Chargement des clés échoué: " + errorText);
-        return;
-    }
-    std::ostringstream message;
-    message << encryptionKeys_.size() << " clé(s) de chiffrement, " << signingKeys_.size() << " clé(s) de signature.";
-    updateStatus(message.str());
-    appendLog("Clés rechargées: " + message.str());
-    updateHomeStatus();
-}
-
-void MainWindow::exportEncryptionPublicKey() {
-    auto fingerprint = selectedEncryptionFingerprint();
-    if (fingerprint.empty()) {
-        fl_alert("Aucune clé de chiffrement sélectionnée.");
-        return;
-    }
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Exporter la clé publique");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
-    chooser.filter("Clés ASCII armurées\t*.asc\nTexte\t*.txt\nTous les fichiers\t*");
-    std::string defaultName = fingerprint + ".asc";
-    chooser.preset_file(defaultName.c_str());
-    if (directoryExists(settings_.paths.lastKeyExportDir)) {
-        chooser.directory(settings_.paths.lastKeyExportDir.c_str());
-    } else if (directoryExists(settings_.paths.lastSaveDir)) {
-        chooser.directory(settings_.paths.lastSaveDir.c_str());
-    }
-    if (chooser.show() != 0 || !chooser.filename()) {
-        return;
-    }
-
-    std::string errorText;
-    auto exported = KeyStore(settings_.gpg.executablePath).exportPublicKey(fingerprint, &errorText);
-    if (exported.empty()) {
-        auto message = errorText.empty() ? "Export impossible." : errorText;
-        fl_alert("%s", message.c_str());
-        appendLog("Export de clé publique échoué: " + message);
-        return;
-    }
-
-    std::ofstream output(chooser.filename(), std::ios::binary | std::ios::trunc);
-    if (!output) {
-        fl_alert("Impossible d'écrire le fichier de destination.");
-        appendLog("Export de clé publique échoué: impossible d'écrire le fichier.");
-        return;
-    }
-    output << exported;
-    if (!output) {
-        fl_alert("Erreur pendant l'écriture du fichier.");
-        appendLog("Export de clé publique échoué pendant l'écriture.");
-        return;
-    }
-    settings_.paths.lastKeyExportDir = directoryOf(chooser.filename());
-    settings_.paths.lastSaveDir = settings_.paths.lastKeyExportDir;
-    saveSettings();
-    fl_message("Clé publique exportée.");
-    appendLog("Clé publique exportée pour " + fingerprint);
-}
-
-void MainWindow::executeTextOperation() {
-    updateGpgPath(gpgPathInput_->value() ? gpgPathInput_->value() : "", true);
-    if (settings_.gpg.executablePath.empty()) {
-        fl_alert("Sélectionnez un exécutable gpg avant d'exécuter une opération texte.");
-        return;
-    }
-
-    std::string source = bufferText(textSourceBuffer_);
-    if (source.empty()) {
-        fl_alert("La zone source est vide.");
-        return;
-    }
-
-    const int operation = textOperationChoice_->value();
-    GpgProcessResult result;
-    std::string operationName;
-    if (operation == 0) {
-        auto* key = selectedEncryptionKey();
-        if (!key) {
-            fl_alert("Sélectionnez une clé de chiffrement.");
-            return;
-        }
-        if (!confirmKeyWarnings(*key, "chiffrer ce texte")) {
-            return;
-        }
-        operationName = "Chiffrement texte";
-        result = CryptoService(settings_.gpg.executablePath).encryptText(source, key->fingerprint);
-    } else if (operation == 1) {
-        operationName = "Déchiffrement texte";
-        result = CryptoService(settings_.gpg.executablePath).decryptText(source);
-    } else if (operation == 2) {
-        auto* key = selectedSigningKey();
-        if (!key) {
-            fl_alert("Sélectionnez une clé de signature.");
-            return;
-        }
-        if (!confirmKeyWarnings(*key, "signer ce texte")) {
-            return;
-        }
-        operationName = "Signature texte";
-        result = SignatureService(settings_.gpg.executablePath).signText(source, key->fingerprint);
-    } else {
-        operationName = "Vérification texte";
-        result = SignatureService(settings_.gpg.executablePath).verifyText(source);
-    }
-
-    if (operation == 3) {
-        auto summary = SignatureService::summarizeVerification(result);
-        textResultBuffer_->text(summary.message.c_str());
-    } else if (result.success()) {
-        textResultBuffer_->text(result.standardOutput.c_str());
-    } else {
-        auto diagnostic = diagnosticText(result);
-        textResultBuffer_->text(diagnostic.empty() ? "L'opération GPG a échoué." : diagnostic.c_str());
-    }
-
-    if (result.success()) {
-        appendLog(operationName + " réussi.");
-    } else {
-        std::ostringstream message;
-        message << operationName << " échoué";
-        if (result.exitCode >= 0) {
-            message << " (code " << result.exitCode << ")";
-        }
-        message << ".";
-        appendLog(message.str());
-    }
-}
-
-void MainWindow::copyTextResult() {
-    auto result = bufferText(textResultBuffer_);
-    if (result.empty()) {
-        fl_alert("Aucun résultat à copier.");
-        return;
-    }
-    Fl::copy(result.c_str(), static_cast<int>(result.size()), 1);
-    appendLog("Résultat texte copié dans le presse-papiers.");
-}
-
-void MainWindow::clearClipboard() {
-    Fl::copy("", 0, 1);
-    appendLog("Presse-papiers vidé à la demande.");
-}
-
-void MainWindow::clearTextBuffers() {
-    textSourceBuffer_->text("");
-    textResultBuffer_->text("");
-    appendLog("Zones texte effacées.");
-}
-
-void MainWindow::saveTextResult() {
-    auto result = bufferText(textResultBuffer_);
-    if (result.empty()) {
-        fl_alert("Aucun résultat à enregistrer.");
-        return;
-    }
-
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Enregistrer le résultat");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
-    chooser.filter("Texte\t*.txt\nASCII armuré\t*.asc\nTous les fichiers\t*");
-    chooser.preset_file("sealkey-result.txt");
-    if (directoryExists(settings_.paths.lastSaveDir)) {
-        chooser.directory(settings_.paths.lastSaveDir.c_str());
-    }
-    if (chooser.show() != 0 || !chooser.filename()) {
-        return;
-    }
-
-    std::ofstream output(chooser.filename(), std::ios::binary | std::ios::trunc);
-    if (!output) {
-        fl_alert("Impossible d'écrire le fichier de destination.");
-        appendLog("Enregistrement du résultat texte échoué.");
-        return;
-    }
-    output << result;
-    if (!output) {
-        fl_alert("Erreur pendant l'écriture du fichier.");
-        appendLog("Enregistrement du résultat texte échoué pendant l'écriture.");
-        return;
-    }
-    settings_.paths.lastSaveDir = directoryOf(chooser.filename());
-    saveSettings();
-    appendLog("Résultat texte enregistré.");
-}
-
-void MainWindow::chooseFileSource() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Choisir le fichier source");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
-    if (directoryExists(settings_.paths.lastOpenDir)) {
-        chooser.directory(settings_.paths.lastOpenDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        fileSourceInput_->value(chooser.filename());
-        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
+        updateStatus("GPG fonctionne : " + firstLine + " (" + settings_.gpg.executablePath + ")");
         saveSettings();
-    }
-}
-
-void MainWindow::chooseFileDestination() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Choisir le fichier destination");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
-    auto defaultName = defaultFileNameForOperation(fileSourceInput_->value() ? fileSourceInput_->value() : "",
-                                                   fileOperationChoice_->value());
-    chooser.preset_file(defaultName.c_str());
-    if (directoryExists(settings_.paths.lastSaveDir)) {
-        chooser.directory(settings_.paths.lastSaveDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        fileDestinationInput_->value(chooser.filename());
-        settings_.paths.lastSaveDir = directoryOf(chooser.filename());
-        saveSettings();
-    }
-}
-
-void MainWindow::chooseSignatureFile(bool saveMode) {
-    Fl_Native_File_Chooser chooser;
-    chooser.title(saveMode ? "Choisir le fichier signature à écrire" : "Choisir le fichier signature");
-    chooser.type(saveMode ? Fl_Native_File_Chooser::BROWSE_SAVE_FILE : Fl_Native_File_Chooser::BROWSE_FILE);
-    chooser.filter("Signatures ASCII\t*.asc\nSignatures\t*.sig\nTous les fichiers\t*");
-    if (saveMode) {
-        auto defaultName = defaultFileNameForOperation(fileSourceInput_->value() ? fileSourceInput_->value() : "", 2);
-        chooser.preset_file(defaultName.c_str());
-        if (directoryExists(settings_.paths.lastSignatureSaveDir)) {
-            chooser.directory(settings_.paths.lastSignatureSaveDir.c_str());
-        } else if (directoryExists(settings_.paths.lastSaveDir)) {
-            chooser.directory(settings_.paths.lastSaveDir.c_str());
-        }
-    } else if (directoryExists(settings_.paths.lastSignatureOpenDir)) {
-        chooser.directory(settings_.paths.lastSignatureOpenDir.c_str());
-    } else if (directoryExists(settings_.paths.lastOpenDir)) {
-        chooser.directory(settings_.paths.lastOpenDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        fileSignatureInput_->value(chooser.filename());
-        if (saveMode) {
-            settings_.paths.lastSignatureSaveDir = directoryOf(chooser.filename());
-            settings_.paths.lastSaveDir = settings_.paths.lastSignatureSaveDir;
-        } else {
-            settings_.paths.lastSignatureOpenDir = directoryOf(chooser.filename());
-            settings_.paths.lastOpenDir = settings_.paths.lastSignatureOpenDir;
-        }
-        saveSettings();
-    }
-}
-
-void MainWindow::executeFileOperation() {
-    updateGpgPath(gpgPathInput_->value() ? gpgPathInput_->value() : "", true);
-    if (settings_.gpg.executablePath.empty()) {
-        fl_alert("Sélectionnez un exécutable gpg avant d'exécuter une opération fichier.");
-        return;
-    }
-
-    const int operation = fileOperationChoice_->value();
-    std::string source = fileSourceInput_->value() ? fileSourceInput_->value() : "";
-    std::string destination = fileDestinationInput_->value() ? fileDestinationInput_->value() : "";
-    std::string signature = fileSignatureInput_->value() ? fileSignatureInput_->value() : "";
-
-    if (!fileExists(source)) {
-        fl_alert("Sélectionnez un fichier source existant.");
-        return;
-    }
-    if ((operation == 0 || operation == 1) && destination.empty()) {
-        fl_alert("Sélectionnez un fichier destination.");
-        return;
-    }
-    if (operation == 2 && signature.empty()) {
-        fl_alert("Sélectionnez le fichier signature à écrire.");
-        return;
-    }
-    if (operation == 3 && !fileExists(signature)) {
-        fl_alert("Sélectionnez un fichier signature existant.");
-        return;
-    }
-
-    GpgProcessResult result;
-    std::string operationName;
-    if (operation == 0) {
-        auto* key = selectedEncryptionKey();
-        if (!key) {
-            fl_alert("Sélectionnez une clé de chiffrement.");
-            return;
-        }
-        if (!confirmKeyWarnings(*key, "chiffrer ce fichier")) {
-            return;
-        }
-        operationName = "Chiffrement fichier";
-        result = CryptoService(settings_.gpg.executablePath).encryptFile(source, destination, key->fingerprint, true);
-    } else if (operation == 1) {
-        operationName = "Déchiffrement fichier";
-        result = CryptoService(settings_.gpg.executablePath).decryptFile(source, destination);
-    } else if (operation == 2) {
-        auto* key = selectedSigningKey();
-        if (!key) {
-            fl_alert("Sélectionnez une clé de signature.");
-            return;
-        }
-        if (!confirmKeyWarnings(*key, "signer ce fichier")) {
-            return;
-        }
-        operationName = "Signature fichier";
-        result = SignatureService(settings_.gpg.executablePath).signFileDetached(source, signature, key->fingerprint);
-    } else if (operation == 3) {
-        operationName = "Vérification signature détachée";
-        result = SignatureService(settings_.gpg.executablePath).verifyDetachedFile(signature, source);
-    } else {
-        operationName = "Vérification fichier signé";
-        result = SignatureService(settings_.gpg.executablePath).verifySignedFile(source);
-    }
-
-    if (result.success()) {
-        if (operation == 3 || operation == 4) {
-            auto summary = SignatureService::summarizeVerification(result);
-            fileStatusOutput_->value(summary.message.c_str());
-        } else {
-            fileStatusOutput_->value("Opération réussie.");
-        }
-        settings_.paths.lastOpenDir = directoryOf(source);
-        if (!destination.empty()) {
-            settings_.paths.lastSaveDir = directoryOf(destination);
-        }
-        if (!signature.empty()) {
-            if (operation == 2) {
-                settings_.paths.lastSignatureSaveDir = directoryOf(signature);
-            } else {
-                settings_.paths.lastSignatureOpenDir = directoryOf(signature);
-            }
-        }
-        saveSettings();
-        appendLog(operationName + " réussi.");
-        return;
-    }
-
-    auto diagnostic = diagnosticText(result);
-    if (operation == 3 || operation == 4) {
-        auto summary = SignatureService::summarizeVerification(result);
-        fileStatusOutput_->value(summary.message.c_str());
-    } else {
-        fileStatusOutput_->value(diagnostic.empty() ? "L'opération GPG a échoué." : diagnostic.c_str());
-    }
-    std::ostringstream message;
-    message << operationName << " échoué";
-    if (result.exitCode >= 0) {
-        message << " (code " << result.exitCode << ")";
-    }
-    message << ".";
-    appendLog(message.str());
-}
-
-void MainWindow::chooseSendSource() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Quel fichier voulez-vous envoyer ?");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
-    if (directoryExists(settings_.paths.lastOpenDir)) {
-        chooser.directory(settings_.paths.lastOpenDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        sendSourceInput_->value(chooser.filename());
-        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
-        auto output = std::filesystem::path(settings_.paths.lastSaveDir.empty() ? settings_.paths.lastOpenDir : settings_.paths.lastSaveDir) /
-                      defaultProtectedFileName(chooser.filename(), sendActionChoice_->value() != 1);
-        sendOutputInput_->value(output.string().c_str());
-        saveSettings();
-        updateHomeStatus();
-    }
-}
-
-void MainWindow::chooseSendOutput() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Où créer le fichier à envoyer ?");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
-    chooser.preset_file(defaultProtectedFileName(sendSourceInput_->value() ? sendSourceInput_->value() : "",
-                                                 sendActionChoice_->value() != 1).c_str());
-    if (directoryExists(settings_.paths.lastSaveDir)) {
-        chooser.directory(settings_.paths.lastSaveDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        sendOutputInput_->value(chooser.filename());
-        settings_.paths.lastSaveDir = directoryOf(chooser.filename());
-        saveSettings();
-    }
-}
-
-void MainWindow::executeSendOperation() {
-    const std::string source = sendSourceInput_->value() ? sendSourceInput_->value() : "";
-    const std::string output = sendOutputInput_->value() ? sendOutputInput_->value() : "";
-    const int action = sendActionChoice_->value();
-    if (!fileExists(source)) {
-        fl_alert("Sélectionnez le fichier à envoyer.");
-        return;
-    }
-    if (output.empty()) {
-        fl_alert("Choisissez le fichier de sortie.");
-        return;
-    }
-    const GpgKey* recipient = nullptr;
-    if (action == 0 || action == 2) {
-        int index = sendRecipientBrowser_->value();
-        if (index <= 0 || index > static_cast<int>(encryptionKeys_.size())) {
-            fl_alert("Choisissez le destinataire.");
-            return;
-        }
-        recipient = &encryptionKeys_[index - 1];
-        if (!confirmKeyWarnings(*recipient, "envoyer ce fichier à ce destinataire")) {
-            return;
-        }
-    }
-    const GpgKey* signer = nullptr;
-    if (action == 1 || action == 2) {
-        signer = selectedSigningKey();
-        if (!signer) {
-            fl_alert("Choisissez une clé de signature dans l'onglet Clés.");
-            return;
-        }
-        if (!confirmKeyWarnings(*signer, "signer ce fichier")) {
-            return;
-        }
-    }
-
-    std::ostringstream summary;
-    summary << "Résumé\n\nFichier source :\n" << source << "\n\nAction :\n";
-    summary << (action == 0 ? "Chiffrer" : action == 1 ? "Signer" : "Chiffrer et signer");
-    if (recipient) {
-        summary << "\n\nDestinataire :\n" << keyLabel(*recipient);
-    }
-    if (signer) {
-        summary << "\n\nSignature :\n" << keyLabel(*signer);
-    }
-    summary << "\n\nFichier produit :\n" << output;
-    if (fl_choice("%s", "Annuler", "Exécuter", "", summary.str().c_str()) != 1) {
-        return;
-    }
-
-    GpgProcessResult process;
-    if (action == 0) {
-        process = CryptoService(settings_.gpg.executablePath).encryptFile(source, output, recipient->fingerprint, true);
-    } else if (action == 1) {
-        process = SignatureService(settings_.gpg.executablePath).signFileDetached(source, output, signer->fingerprint);
-    } else {
-        process = CryptoService(settings_.gpg.executablePath).encryptAndSignFile(source, output, recipient->fingerprint, signer->fingerprint, true);
-    }
-
-    OperationResult result;
-    result.success = process.success();
-    result.technicalMessage = diagnosticText(process);
-    if (result.success) {
-        result.userMessage = action == 0
-                                 ? "Le fichier a été chiffré pour le destinataire. Seul ce destinataire pourra le déchiffrer avec sa clé privée."
-                                 : action == 1
-                                       ? "Signature créée. Envoyez le fichier original et le fichier de signature au destinataire."
-                                       : "Le fichier est chiffré pour le destinataire et signé avec votre identité.";
-        result.outputFiles.push_back(output);
-        result.suggestedNextActions.push_back("Envoyer le fichier produit au destinataire.");
-        settings_.paths.lastOpenDir = directoryOf(source);
-        settings_.paths.lastSaveDir = directoryOf(output);
-        saveSettings();
-        appendLog("Parcours Envoyer réussi.");
-    } else {
-        result.userMessage = readableGpgError(process);
-        result.suggestedNextActions.push_back("Vérifier la configuration GPG.");
-        result.suggestedNextActions.push_back("Vérifier les clés sélectionnées.");
-        appendLog("Parcours Envoyer échoué.");
-    }
-    setOperationResult(sendResultBuffer_, result);
-}
-
-void MainWindow::chooseReceiveFile() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Quel fichier avez-vous reçu ?");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
-    if (directoryExists(settings_.paths.lastOpenDir)) {
-        chooser.directory(settings_.paths.lastOpenDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        receiveFileInput_->value(chooser.filename());
-        receiveDetectedOutput_->value(fileKindForPath(chooser.filename()).c_str());
-        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
-        auto output = std::filesystem::path(settings_.paths.lastSaveDir.empty() ? settings_.paths.lastOpenDir : settings_.paths.lastSaveDir) /
-                      defaultDecryptedFileName(chooser.filename());
-        receiveOutputInput_->value(output.string().c_str());
-        saveSettings();
-        updateHomeStatus();
-    }
-}
-
-void MainWindow::chooseReceiveOutput() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Où écrire le fichier ouvert ?");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
-    chooser.preset_file(defaultDecryptedFileName(receiveFileInput_->value() ? receiveFileInput_->value() : "").c_str());
-    if (directoryExists(settings_.paths.lastSaveDir)) {
-        chooser.directory(settings_.paths.lastSaveDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        receiveOutputInput_->value(chooser.filename());
-        settings_.paths.lastSaveDir = directoryOf(chooser.filename());
-        saveSettings();
-    }
-}
-
-void MainWindow::chooseReceiveOriginal() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Fichier original correspondant à la signature");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
-    if (directoryExists(settings_.paths.lastOpenDir)) {
-        chooser.directory(settings_.paths.lastOpenDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        receiveOriginalInput_->value(chooser.filename());
-        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
-        saveSettings();
-    }
-}
-
-void MainWindow::executeReceiveOperation() {
-    const std::string file = receiveFileInput_->value() ? receiveFileInput_->value() : "";
-    const std::string output = receiveOutputInput_->value() ? receiveOutputInput_->value() : "";
-    const std::string original = receiveOriginalInput_->value() ? receiveOriginalInput_->value() : "";
-    if (!fileExists(file)) {
-        fl_alert("Sélectionnez le fichier reçu.");
-        return;
-    }
-
-    OperationResult result;
-    GpgProcessResult process;
-    const bool looksEncrypted = fileKindForPath(file).find("chiffré") != std::string::npos ||
-                                fileContainsMarker(file, "BEGIN PGP MESSAGE");
-    const bool looksDetachedSignature = std::filesystem::path(file).extension() == ".sig";
-    const bool looksPublicKey = fileContainsMarker(file, "BEGIN PGP PUBLIC KEY BLOCK");
-    const bool looksSignedText = fileContainsMarker(file, "BEGIN PGP SIGNED MESSAGE") ||
-                                 fileContainsMarker(file, "BEGIN PGP SIGNATURE");
-
-    if (looksPublicKey) {
-        if (fl_choice("Ce fichier ressemble à une clé publique.\nVoulez-vous l'importer ?", "Annuler", "Importer", "") != 1) {
-            return;
-        }
-        process = KeyStore(settings_.gpg.executablePath).importPublicKey(file);
-        result.success = process.success();
-        result.userMessage = result.success ? "Clé publique importée. Vous pouvez maintenant vérifier des signatures ou chiffrer pour ce correspondant."
-                                            : readableGpgError(process);
-        result.technicalMessage = diagnosticText(process);
-        if (result.success) {
-            reloadKeys();
-        }
-    } else if (looksEncrypted) {
-        if (output.empty()) {
-            fl_alert("Choisissez le fichier de sortie pour le déchiffrement.");
-            return;
-        }
-        process = CryptoService(settings_.gpg.executablePath).decryptFile(file, output);
-        result.success = process.success();
-        result.userMessage = result.success ? "Le fichier a été déchiffré avec succès."
-                                            : "Ce fichier ne peut pas être déchiffré avec vos clés privées. Il n'a probablement pas été chiffré pour vous, ou vous n'utilisez pas le bon trousseau GPG.";
-        result.technicalMessage = diagnosticText(process);
-        if (result.success) {
-            result.outputFiles.push_back(output);
-            settings_.paths.lastSaveDir = directoryOf(output);
-        }
-    } else if (looksDetachedSignature) {
-        if (!fileExists(original)) {
-            fl_alert("Une signature détachée nécessite le fichier original.");
-            return;
-        }
-        process = SignatureService(settings_.gpg.executablePath).verifyDetachedFile(file, original);
-        auto summary = SignatureService::summarizeVerification(process);
-        result.success = summary.valid;
-        result.userMessage = summary.valid
-                                 ? "Signature valide. Le fichier correspond bien à cette signature."
-                                 : readableGpgError(process);
-        if (summary.unknownKey) {
-            result.warnings.push_back("La clé publique de l'expéditeur n'est pas connue.");
-        }
-        if (summary.expiredKey) {
-            result.warnings.push_back("La clé ou la signature est expirée.");
-        }
-        if (summary.revokedKey) {
-            result.warnings.push_back("La clé du signataire est révoquée.");
-        }
-        if (summary.untrustedKey) {
-            result.warnings.push_back("La signature est cryptographiquement valide, mais la confiance n'est pas établie.");
-        }
-        result.technicalMessage = diagnosticText(process);
-    } else if (looksSignedText) {
-        process = SignatureService(settings_.gpg.executablePath).verifySignedFile(file);
-        auto summary = SignatureService::summarizeVerification(process);
-        result.success = summary.valid;
-        result.userMessage = summary.valid
-                                 ? "Signature valide. Le fichier signé n'a pas été modifié depuis sa signature."
-                                 : readableGpgError(process);
-        if (summary.unknownKey) {
-            result.warnings.push_back("La clé publique de l'expéditeur n'est pas connue.");
-        }
-        if (summary.expiredKey) {
-            result.warnings.push_back("La clé ou la signature est expirée.");
-        }
-        if (summary.revokedKey) {
-            result.warnings.push_back("La clé du signataire est révoquée.");
-        }
-        if (summary.untrustedKey) {
-            result.warnings.push_back("La signature est cryptographiquement valide, mais la confiance n'est pas établie.");
-        }
-        result.technicalMessage = diagnosticText(process);
-    } else {
-        result.userMessage = "SealKey n'a pas reconnu automatiquement ce fichier. Essayez l'onglet Fichiers avancé pour choisir l'opération explicitement.";
-        result.suggestedNextActions.push_back("Utiliser l'onglet Fichiers.");
-    }
-
-    settings_.paths.lastOpenDir = directoryOf(file);
-    saveSettings();
-    setOperationResult(receiveResultBuffer_, result);
-    appendLog(result.success ? "Parcours Recevoir réussi." : "Parcours Recevoir terminé avec avertissement ou erreur.");
-}
-
-void MainWindow::addPackageFile() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Ajouter un fichier au dossier d'envoi");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
-    if (directoryExists(settings_.paths.lastOpenDir)) {
-        chooser.directory(settings_.paths.lastOpenDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        packageFiles_.push_back(chooser.filename());
-        packageFilesBrowser_->add(std::filesystem::path(chooser.filename()).filename().string().c_str());
-        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
-        if (packageOutputDirInput_->value() == nullptr || std::string(packageOutputDirInput_->value()).empty()) {
-            auto defaultDir = std::filesystem::path(settings_.paths.lastSaveDir.empty() ? settings_.paths.lastOpenDir : settings_.paths.lastSaveDir) /
-                              makePackageDirectoryName();
-            packageOutputDirInput_->value(defaultDir.string().c_str());
-        }
-        saveSettings();
-    }
-}
-
-void MainWindow::clearPackageFiles() {
-    packageFiles_.clear();
-    packageFilesBrowser_->clear();
-    packageResultBuffer_->text("");
-}
-
-void MainWindow::choosePackageOutputDir() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Choisir le dossier de sortie");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_DIRECTORY);
-    if (directoryExists(settings_.paths.lastSaveDir)) {
-        chooser.directory(settings_.paths.lastSaveDir.c_str());
-    }
-    if (chooser.show() == 0 && chooser.filename()) {
-        auto outputDir = std::filesystem::path(chooser.filename()) / makePackageDirectoryName();
-        packageOutputDirInput_->value(outputDir.string().c_str());
-        settings_.paths.lastSaveDir = chooser.filename();
-        saveSettings();
-    }
-}
-
-void MainWindow::executePackageOperation() {
-    if (packageFiles_.empty()) {
-        fl_alert("Ajoutez au moins un fichier.");
-        return;
-    }
-    const std::string outputDirText = packageOutputDirInput_->value() ? packageOutputDirInput_->value() : "";
-    if (outputDirText.empty()) {
-        fl_alert("Choisissez un dossier de sortie.");
-        return;
-    }
-    const int action = packageActionChoice_->value();
-    const GpgKey* recipient = nullptr;
-    if (action == 1 || action == 2) {
-        int index = packageRecipientBrowser_->value();
-        if (index <= 0 || index > static_cast<int>(encryptionKeys_.size())) {
-            fl_alert("Choisissez le destinataire.");
-            return;
-        }
-        recipient = &encryptionKeys_[index - 1];
-        if (!confirmKeyWarnings(*recipient, "préparer ce dossier d'envoi")) {
-            return;
-        }
-    }
-    const GpgKey* signer = nullptr;
-    if (action == 0 || action == 2 || packageIncludePublicKeyCheck_->value()) {
-        signer = selectedSigningKey();
-        if (!signer) {
-            fl_alert("Choisissez une clé de signature dans l'onglet Clés.");
-            return;
-        }
-        if ((action == 0 || action == 2) && !confirmKeyWarnings(*signer, "signer les fichiers du dossier")) {
-            return;
-        }
-    }
-
-    std::ostringstream summary;
-    summary << "Résumé\n\nFichiers : " << packageFiles_.size() << "\nAction : "
-            << (action == 0 ? "Signer" : action == 1 ? "Chiffrer" : "Chiffrer et signer")
-            << "\nDossier : " << outputDirText;
-    if (recipient) {
-        summary << "\nDestinataire : " << keyLabel(*recipient);
-    }
-    if (signer) {
-        summary << "\nSignature : " << keyLabel(*signer);
-    }
-    if (packageIncludePublicKeyCheck_->value()) {
-        summary << "\nLa clé publique de signature sera jointe.";
-    }
-    if (fl_choice("%s", "Annuler", "Créer", "", summary.str().c_str()) != 1) {
-        return;
-    }
-
-    OperationResult result;
-    std::filesystem::path outputDir(outputDirText);
-    std::error_code ec;
-    std::filesystem::create_directories(outputDir, ec);
-    if (ec) {
-        result.userMessage = "Impossible de créer le dossier de sortie.";
-        result.technicalMessage = ec.message();
-        setOperationResult(packageResultBuffer_, result);
-        return;
-    }
-
-    bool allOk = true;
-    std::ostringstream technical;
-    for (const auto& inputFile : packageFiles_) {
-        auto sourcePath = std::filesystem::path(inputFile);
-        auto outputPath = outputDir / defaultProtectedFileName(inputFile, action != 0);
-        GpgProcessResult process;
-        if (action == 0) {
-            outputPath = outputDir / (sourcePath.filename().string() + ".sig.asc");
-            process = SignatureService(settings_.gpg.executablePath).signFileDetached(inputFile, outputPath.string(), signer->fingerprint);
-        } else if (action == 1) {
-            process = CryptoService(settings_.gpg.executablePath).encryptFile(inputFile, outputPath.string(), recipient->fingerprint, true);
-        } else {
-            process = CryptoService(settings_.gpg.executablePath).encryptAndSignFile(inputFile, outputPath.string(), recipient->fingerprint, signer->fingerprint, true);
-        }
-        technical << "\n[" << sourcePath.filename().string() << "]\n" << diagnosticText(process) << "\n";
-        if (process.success()) {
-            result.outputFiles.push_back(outputPath.string());
-        } else {
-            allOk = false;
-            result.warnings.push_back(sourcePath.filename().string() + " : " + readableGpgError(process));
-        }
-    }
-
-    if (packageIncludePublicKeyCheck_->value() && signer) {
-        std::string errorText;
-        auto exported = KeyStore(settings_.gpg.executablePath).exportPublicKey(signer->fingerprint, &errorText);
-        if (!exported.empty()) {
-            auto keyPath = outputDir / (displayNameFromUid(signer->uid) + "_" + shortFingerprint(signer->fingerprint) + "_GPG_PUB.asc");
-            std::ofstream keyFile(keyPath, std::ios::binary | std::ios::trunc);
-            keyFile << exported;
-            if (keyFile) {
-                result.outputFiles.push_back(keyPath.string());
-            }
-        } else {
-            result.warnings.push_back("La clé publique n'a pas pu être ajoutée : " + errorText);
-        }
-    }
-
-    auto readmePath = outputDir / "README.txt";
-    std::ofstream readme(readmePath, std::ios::trunc);
-    readme << "Ce dossier contient des fichiers préparés avec SealKey.\n\n";
-    readme << "Action : " << (action == 0 ? "signature" : action == 1 ? "chiffrement" : "chiffrement et signature") << "\n";
-    if (recipient) {
-        readme << "Destinataire : " << recipient->uid << "\n";
-    }
-    if (signer) {
-        readme << "Signé par : " << signer->uid << "\n";
-    }
-    readme << "\nFichiers produits :\n";
-    for (const auto& file : result.outputFiles) {
-        readme << "- " << std::filesystem::path(file).filename().string() << "\n";
-    }
-    if (readme) {
-        result.outputFiles.push_back(readmePath.string());
-    }
-
-    result.success = allOk;
-    result.userMessage = allOk ? "Dossier prêt à envoyer." : "Dossier créé, mais certaines opérations ont échoué.";
-    result.technicalMessage = technical.str();
-    result.suggestedNextActions.push_back("Envoyer le dossier complet au destinataire.");
-    settings_.paths.lastSaveDir = outputDir.parent_path().string();
-    saveSettings();
-    setOperationResult(packageResultBuffer_, result);
-    appendLog(allOk ? "Parcours Préparer réussi." : "Parcours Préparer terminé avec erreurs.");
-}
-
-void MainWindow::importPublicKey() {
-    Fl_Native_File_Chooser chooser;
-    chooser.title("Importer une clé publique");
-    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
-    chooser.filter("Clés publiques\t*.asc\nTous les fichiers\t*");
-    if (directoryExists(settings_.paths.lastOpenDir)) {
-        chooser.directory(settings_.paths.lastOpenDir.c_str());
-    }
-    if (chooser.show() != 0 || !chooser.filename()) {
-        return;
-    }
-    if (fl_choice("Importer cette clé publique dans le trousseau GPG ?", "Annuler", "Importer", "") != 1) {
-        return;
-    }
-    auto process = KeyStore(settings_.gpg.executablePath).importPublicKey(chooser.filename());
-    settings_.paths.lastOpenDir = directoryOf(chooser.filename());
-    saveSettings();
-    if (process.success()) {
-        fl_message("Clé publique importée.");
-        appendLog("Clé publique importée.");
         reloadKeys();
     } else {
-        auto message = readableGpgError(process);
-        fl_alert("%s", message.c_str());
-        appendLog("Import de clé publique échoué.");
+        updateStatus(result.errorText.empty() ? "GPG indisponible." : result.errorText);
     }
+    updateActions();
 }
 
-void MainWindow::goToTab(Fl_Group* tab) {
-    if (tab) {
-        tabs_->value(tab);
-        updateLastTab();
+void MainWindow::chooseEncryptFile() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Choisir le fichier à crypter");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    if (directoryExists(settings_.paths.lastOpenDir)) {
+        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    }
+    if (chooser.show() == 0 && chooser.filename()) {
+        encryptFileInput_->value(chooser.filename());
+        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
         saveSettings();
     }
+    updateActions();
 }
 
-void MainWindow::populateKeyBrowsers() {
-    encryptionBrowser_->clear();
-    signingBrowser_->clear();
-    if (sendRecipientBrowser_) {
-        sendRecipientBrowser_->clear();
+void MainWindow::executeEncrypt() {
+    const auto source = valueOf(encryptFileInput_);
+    const auto* recipient = selectedEncryptRecipientKey();
+    if (!fileExists(source) || !recipient) {
+        return;
     }
-    if (packageRecipientBrowser_) {
-        packageRecipientBrowser_->clear();
+    auto destination = SealKeyPaths::appendExtension(source, settings_.options.encryptedFileExtension);
+    if (!confirmOverwrite(destination)) {
+        return;
     }
-    for (const auto& key : encryptionKeys_) {
-        encryptionBrowser_->add(keyLabel(key).c_str());
-        if (sendRecipientBrowser_) {
-            auto contact = contactFromKey(key);
-            std::ostringstream label;
-            label << (contact.name.empty() ? key.uid : contact.name);
-            if (!contact.email.empty()) {
-                label << " <" << contact.email << ">";
-            }
-            label << "  [" << shortFingerprint(contact.fingerprint) << "]";
-            if (contact.trustLevel != "f" && contact.trustLevel != "u") {
-                label << "  confiance inconnue";
-            }
-            sendRecipientBrowser_->add(label.str().c_str());
-            if (packageRecipientBrowser_) {
-                packageRecipientBrowser_->add(label.str().c_str());
-            }
+    GpgProcessResult result;
+    if (encryptSignCheck_->value()) {
+        const auto* signer = selectedSigningKey();
+        if (!signer) {
+            fl_alert("Sélectionnez une clé privée dans Configuration.");
+            return;
         }
+        result = CryptoService(settings_.gpg.executablePath)
+                     .encryptAndSignFile(source, destination, recipient->fingerprint, signer->fingerprint, true);
+    } else {
+        result = CryptoService(settings_.gpg.executablePath).encryptFile(source, destination, recipient->fingerprint, true);
     }
-    for (const auto& key : signingKeys_) {
-        signingBrowser_->add(keyLabel(key).c_str());
+    if (result.success()) {
+        std::ostringstream text;
+        text << "Fichier créé : " << destination << "\nDestinataire : " << keyLabel(*recipient)
+             << "\nSigné : " << (encryptSignCheck_->value() ? selectedSigningLabel() : "non");
+        setResult(encryptResultBuffer_, text.str());
+    } else {
+        setResult(encryptResultBuffer_, readableGpgError("Le fichier n'a pas pu être chiffré.", source, result));
     }
 }
 
-void MainWindow::restoreKeySelections() {
-    encryptionBrowser_->value(0);
-    signingBrowser_->value(0);
-    for (int i = 0; i < static_cast<int>(encryptionKeys_.size()); ++i) {
-        if (encryptionKeys_[i].fingerprint == settings_.keys.encryptionFingerprint) {
-            encryptionBrowser_->value(i + 1);
-            break;
+void MainWindow::chooseDecryptFile() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Choisir le fichier à décrypter");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    const auto filter = std::string("Fichiers chiffrés\t*.") + settings_.options.encryptedFileExtension + "\nTous les fichiers\t*";
+    chooser.filter(filter.c_str());
+    if (directoryExists(settings_.paths.lastOpenDir)) {
+        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    }
+    if (chooser.show() == 0 && chooser.filename()) {
+        decryptFileInput_->value(chooser.filename());
+        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
+        saveSettings();
+        refreshDecryptSigners();
+    }
+    updateActions();
+}
+
+void MainWindow::refreshDecryptSigners() {
+    const auto source = valueOf(decryptFileInput_);
+    if (!fileExists(source) || !gpgConfigured()) {
+        decryptSignersBrowser_->clear();
+        decryptSignersBrowser_->add("Aucune signature");
+        return;
+    }
+    auto result = CryptoService(settings_.gpg.executablePath).inspectEncryptedFile(source);
+    setSigners(decryptSignersBrowser_, diagnosticText(result));
+}
+
+void MainWindow::executeDecrypt() {
+    const auto source = valueOf(decryptFileInput_);
+    if (!fileExists(source)) {
+        return;
+    }
+    auto destination = SealKeyPaths::removeExtensionForDecrypt(source, settings_.options.encryptedFileExtension);
+    if (destination == source) {
+        destination += ".decrypted";
+    }
+    if (!confirmOverwrite(destination)) {
+        return;
+    }
+    auto result = CryptoService(settings_.gpg.executablePath).decryptFile(source, destination);
+    if (result.success()) {
+        setSigners(decryptSignersBrowser_, diagnosticText(result));
+        setResult(decryptResultBuffer_, "Fichier décrypté : " + destination + "\n" + diagnosticText(result));
+    } else {
+        setSigners(decryptSignersBrowser_, diagnosticText(result));
+        setResult(decryptResultBuffer_, readableGpgError("Le fichier n'a pas pu être décrypté.", source, result));
+    }
+}
+
+void MainWindow::chooseSignFile() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Choisir le fichier à signer");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    if (directoryExists(settings_.paths.lastOpenDir)) {
+        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    }
+    if (chooser.show() == 0 && chooser.filename()) {
+        signFileInput_->value(chooser.filename());
+        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
+        saveSettings();
+    }
+    updateActions();
+}
+
+void MainWindow::executeSign() {
+    const auto source = valueOf(signFileInput_);
+    const auto* signer = selectedSigningKey();
+    if (!fileExists(source) || !signer) {
+        return;
+    }
+    auto signaturePath = SealKeyPaths::signaturePathFor(source, settings_.options.signatureFileExtension);
+    if (!confirmOverwrite(signaturePath)) {
+        return;
+    }
+    auto result = SignatureService(settings_.gpg.executablePath).signFileDetached(source, signaturePath, signer->fingerprint);
+    if (result.success()) {
+        setResult(signResultBuffer_, "Signature créée : " + signaturePath + "\nClé utilisée : " + keyLabel(*signer));
+    } else {
+        setResult(signResultBuffer_, readableGpgError("La signature n'a pas pu être créée.", source, result));
+    }
+}
+
+void MainWindow::chooseVerifyFile() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Choisir le fichier original");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    if (directoryExists(settings_.paths.lastOpenDir)) {
+        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    }
+    if (chooser.show() == 0 && chooser.filename()) {
+        verifyFileInput_->value(chooser.filename());
+        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
+        auto expected = SealKeyPaths::signaturePathFor(chooser.filename(), settings_.options.signatureFileExtension);
+        if (fileExists(expected)) {
+            verifySignatureInput_->value(expected.c_str());
         }
+        saveSettings();
     }
-    for (int i = 0; i < static_cast<int>(signingKeys_.size()); ++i) {
-        if (signingKeys_[i].fingerprint == settings_.keys.signingFingerprint) {
-            signingBrowser_->value(i + 1);
-            break;
-        }
+    updateActions();
+}
+
+void MainWindow::chooseVerifySignature() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Choisir la signature");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    const auto filter = std::string("Signatures\t*.") + settings_.options.signatureFileExtension + "\nTous les fichiers\t*";
+    chooser.filter(filter.c_str());
+    if (directoryExists(settings_.paths.lastSignatureOpenDir)) {
+        chooser.directory(settings_.paths.lastSignatureOpenDir.c_str());
     }
-    if (encryptionBrowser_->value() == 0) {
-        settings_.keys.encryptionFingerprint.clear();
+    if (chooser.show() == 0 && chooser.filename()) {
+        verifySignatureInput_->value(chooser.filename());
+        settings_.paths.lastSignatureOpenDir = directoryOf(chooser.filename());
+        saveSettings();
     }
-    if (signingBrowser_->value() == 0) {
+    updateActions();
+}
+
+void MainWindow::executeVerify() {
+    const auto source = valueOf(verifyFileInput_);
+    const auto signature = valueOf(verifySignatureInput_);
+    auto result = SignatureService(settings_.gpg.executablePath).verifyDetachedFile(signature, source);
+    auto summary = SignatureService::summarizeVerification(result);
+    setSigners(verifySignersBrowser_, diagnosticText(result));
+    setResult(verifyResultBuffer_, summary.message);
+}
+
+void MainWindow::importRecipientKey() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Ajouter la clé d'un destinataire");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    chooser.filter("Clés publiques\t*.asc\nClés GPG\t*.gpg\nClés PGP\t*.pgp\nTous les fichiers\t*");
+    if (directoryExists(settings_.paths.lastOpenDir)) {
+        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    }
+    if (chooser.show() != 0 || !chooser.filename()) {
+        return;
+    }
+    auto result = KeyStore(settings_.gpg.executablePath).importPublicKey(chooser.filename());
+    if (result.success()) {
+        updateStatus("Clé importée depuis : " + std::string(chooser.filename()));
+        reloadKeys();
+    } else {
+        updateStatus(readableGpgError("La clé n'a pas pu être importée.", chooser.filename(), result));
+    }
+}
+
+void MainWindow::exportSelectedRecipientKey() {
+    const auto* key = selectedConfigRecipientKey();
+    if (!key) {
+        return;
+    }
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Exporter la clé du destinataire");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
+    chooser.preset_file(publicExportFileName(*key).c_str());
+    if (directoryExists(settings_.paths.lastKeyExportDir)) {
+        chooser.directory(settings_.paths.lastKeyExportDir.c_str());
+    }
+    if (chooser.show() != 0 || !chooser.filename()) {
+        return;
+    }
+    std::string error;
+    auto data = KeyStore(settings_.gpg.executablePath).exportPublicKey(key->fingerprint, &error);
+    if (data.empty()) {
+        updateStatus("Export impossible : " + error);
+        return;
+    }
+    std::ofstream out(chooser.filename(), std::ios::binary | std::ios::trunc);
+    out << data;
+    settings_.paths.lastKeyExportDir = directoryOf(chooser.filename());
+    saveSettings();
+    updateStatus(out ? "Clé publique exportée : " + std::string(chooser.filename()) : "Écriture impossible.");
+}
+
+void MainWindow::exportMyPublicKey() {
+    const auto* key = selectedListedSigningKey();
+    if (!key) {
+        return;
+    }
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Exporter ma clé publique");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
+    chooser.preset_file(publicExportFileName(*key).c_str());
+    if (directoryExists(settings_.paths.lastKeyExportDir)) {
+        chooser.directory(settings_.paths.lastKeyExportDir.c_str());
+    }
+    if (chooser.show() != 0 || !chooser.filename()) {
+        return;
+    }
+    std::string error;
+    auto data = KeyStore(settings_.gpg.executablePath).exportPublicKey(key->fingerprint, &error);
+    if (data.empty()) {
+        updateStatus("Export impossible : " + error);
+        return;
+    }
+    std::ofstream out(chooser.filename(), std::ios::binary | std::ios::trunc);
+    out << data;
+    settings_.paths.lastKeyExportDir = directoryOf(chooser.filename());
+    saveSettings();
+    updateStatus(out ? "Ma clé publique a été exportée : " + std::string(chooser.filename()) : "Écriture impossible.");
+}
+
+void MainWindow::exportPrivateKey() {
+    const auto* key = selectedListedSigningKey();
+    if (!key) {
+        return;
+    }
+    if (!confirmKeyAction("Exporter une clé privée",
+                          "Exporter la clé privée suivante ?",
+                          keyLabel(*key),
+                          "Le fichier exporté devra être protégé avec soin.",
+                          "Exporter")) {
+        return;
+    }
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Exporter la clé privée");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
+    chooser.preset_file(secretExportFileName(*key).c_str());
+    if (directoryExists(settings_.paths.lastKeyExportDir)) {
+        chooser.directory(settings_.paths.lastKeyExportDir.c_str());
+    }
+    if (chooser.show() != 0 || !chooser.filename()) {
+        return;
+    }
+    std::string error;
+    auto data = KeyStore(settings_.gpg.executablePath).exportSecretKey(key->fingerprint, &error);
+    if (data.empty()) {
+        updateStatus("Export de clé privée impossible : " + error);
+        return;
+    }
+    std::ofstream out(chooser.filename(), std::ios::binary | std::ios::trunc);
+    out << data;
+    settings_.paths.lastKeyExportDir = directoryOf(chooser.filename());
+    saveSettings();
+    updateStatus(out ? "Clé privée exportée : " + std::string(chooser.filename()) : "Écriture impossible.");
+}
+
+void MainWindow::deleteSelectedPrivateKey() {
+    const auto* key = selectedListedSigningKey();
+    if (!key) {
+        return;
+    }
+    if (!confirmKeyAction("Supprimer une clé privée",
+                          "Supprimer cette clé privée et sa clé publique du trousseau GPG ?",
+                          keyLabel(*key),
+                          "Cette action est destructive.",
+                          "Supprimer")) {
+        return;
+    }
+    auto fingerprint = key->fingerprint;
+    auto result = KeyStore(settings_.gpg.executablePath).deleteSecretAndPublicKey(fingerprint);
+    if (!result.success()) {
+        updateStatus(readableGpgError("La clé privée n'a pas pu être supprimée.", "", result));
+        return;
+    }
+    if (settings_.keys.signingFingerprint == fingerprint) {
         settings_.keys.signingFingerprint.clear();
+        saveSettings();
     }
-    auto* encryptionKey = selectedEncryptionKey();
-    auto* signingKey = selectedSigningKey();
-    encryptionFingerprintOutput_->value(encryptionKey ? keyDetailText(*encryptionKey, "Aucune clé de chiffrement sélectionnée").c_str()
-                                                       : "Aucune clé de chiffrement sélectionnée");
-    signingFingerprintOutput_->value(signingKey ? keyDetailText(*signingKey, "Aucune clé de signature sélectionnée").c_str()
-                                                : "Aucune clé de signature sélectionnée");
+    updateStatus("Clé privée supprimée : " + fingerprint);
+    reloadKeys();
+}
+
+void MainWindow::deleteSelectedRecipientKey() {
+    const auto* key = selectedConfigRecipientKey();
+    if (!key) {
+        return;
+    }
+    if (key->hasSecretKey) {
+        updateStatus("Suppression refusée : cette clé publique est liée à une clé privée locale.");
+        updateActions();
+        return;
+    }
+    if (!confirmKeyAction("Supprimer une clé publique",
+                          "Supprimer cette clé publique de destinataire du trousseau GPG ?",
+                          keyLabel(*key),
+                          "",
+                          "Supprimer")) {
+        return;
+    }
+    auto fingerprint = key->fingerprint;
+    auto result = KeyStore(settings_.gpg.executablePath).deletePublicKey(fingerprint);
+    if (!result.success()) {
+        updateStatus(readableGpgError("La clé publique n'a pas pu être supprimée.", "", result));
+        return;
+    }
+    if (settings_.keys.encryptionFingerprint == fingerprint) {
+        settings_.keys.encryptionFingerprint.clear();
+        saveSettings();
+    }
+    updateStatus("Clé publique supprimée : " + fingerprint);
+    reloadKeys();
+}
+
+void MainWindow::showSelectedPrivateKeyInfo() {
+    const auto* key = selectedListedSigningKey();
+    if (!key) {
+        return;
+    }
+    showKeyInfoDialog(*key);
+}
+
+void MainWindow::setPreferredPrivateKey() {
+    const auto* key = selectedListedSigningKey();
+    if (!key) {
+        return;
+    }
+    settings_.keys.signingFingerprint = key->fingerprint;
+    saveSettings();
+    updatePreferredKeyOutput();
+    updateActions();
+    updateStatus("Clé préférée mise à jour : " + keyLabel(*key));
+}
+
+void MainWindow::createPrivateKey() {
+    KeyStore store(settings_.gpg.executablePath);
+    auto profiles = store.availableKeyGenerationProfiles();
+    const auto request = showCreateKeyDialog(profiles);
+    if (!request.accepted) {
+        return;
+    }
+    if (request.name.empty()) {
+        updateStatus("Création annulée : le nom est obligatoire.");
+        return;
+    }
+    if (!validEmail(request.email)) {
+        updateStatus("Création annulée : l'adresse électronique est invalide.");
+        return;
+    }
+    if (request.expires.empty()) {
+        updateStatus("Création annulée : la validité doit être un entier.");
+        return;
+    }
+
+    std::set<std::string> beforeFingerprints;
+    for (const auto& key : signingKeys_) {
+        beforeFingerprints.insert(key.fingerprint);
+    }
+
+    auto result = store.generatePrivateKey(request.name, request.email, request.comment, request.expires, request.keyProfileId);
+    if (!result.success()) {
+        updateStatus(readableGpgError("La clé privée n'a pas pu être créée.", "", result));
+        return;
+    }
+
+    std::string error;
+    auto keysAfterCreation = store.listMergedKeys(&error);
+    std::string newFingerprint;
+    std::string trustWarning;
+    for (const auto& key : keysAfterCreation) {
+        if (key.hasSecretKey && beforeFingerprints.find(key.fingerprint) == beforeFingerprints.end()) {
+            newFingerprint = key.fingerprint;
+            break;
+        }
+    }
+    if (!newFingerprint.empty()) {
+        settings_.keys.signingFingerprint = newFingerprint;
+        saveSettings();
+        if (request.requiresEncryptionSubkey) {
+            auto subkeyResult = store.addEncryptionSubkey(newFingerprint, request.expires, request.keyProfileId);
+            if (!subkeyResult.success()) {
+                trustWarning = readableGpgError("La clé de signature a été créée, mais la sous-clé de chiffrement n'a pas pu être ajoutée.",
+                                                "",
+                                                subkeyResult);
+            }
+        }
+        if (request.ownerTrust > 0) {
+            auto trustResult = store.importOwnerTrust(newFingerprint, request.ownerTrust);
+            if (!trustResult.success()) {
+                if (!trustWarning.empty()) {
+                    trustWarning += "\n\n";
+                }
+                trustWarning += readableGpgError("La clé a été créée, mais le niveau de confiance n'a pas pu être appliqué.", "", trustResult);
+            }
+        }
+    }
+    if (!trustWarning.empty()) {
+        updateStatus(trustWarning);
+    } else {
+        updateStatus(newFingerprint.empty() ? "Clé privée créée. Les listes de clés ont été actualisées."
+                                            : "Clé privée " + request.keyProfileLabel + " créée et définie comme préférée : " + newFingerprint);
+    }
+    reloadKeys();
+}
+
+void MainWindow::normalizeAndSaveEncryptedExtension() {
+    auto normalized = SealKeyPaths::normalizeExtension(valueOf(encryptedExtensionInput_), "gpg");
+    settings_.options.encryptedFileExtension = normalized;
+    encryptedExtensionInput_->value(normalized.c_str());
     saveSettings();
 }
 
-void MainWindow::appendLog(const std::string& message) {
-    if (!logBuffer_) {
-        return;
-    }
-    auto line = currentTimestamp() + "  " + message + "\n";
-    logBuffer_->append(line.c_str());
+void MainWindow::normalizeAndSaveSignatureExtension() {
+    auto normalized = SealKeyPaths::normalizeExtension(valueOf(signatureExtensionInput_), "sig");
+    settings_.options.signatureFileExtension = normalized;
+    signatureExtensionInput_->value(normalized.c_str());
+    saveSettings();
 }
 
-void MainWindow::clearLog() {
-    if (logBuffer_) {
-        logBuffer_->text("");
-    }
+void MainWindow::loadPrivateKeyColumnWidths() {
+    parseColumnWidths(settings_.options.privateKeyColumnWidths, privateKeyColumnWidths_);
 }
 
-void MainWindow::updateStatus(const std::string& message) {
-    gpgStatusOutput_->value(message.c_str());
+void MainWindow::savePrivateKeyColumnWidths() {
+    settings_.options.privateKeyColumnWidths =
+        serializeColumnWidths(privateKeyColumnWidths_.data(), PrivateKeyColumnCount);
+    saveSettings();
 }
 
-std::string MainWindow::selectedEncryptionFingerprint() const {
-    int index = encryptionBrowser_->value();
-    if (index <= 0 || index > static_cast<int>(encryptionKeys_.size())) {
-        return {};
-    }
-    return encryptionKeys_[index - 1].fingerprint;
+void MainWindow::loadRecipientKeyColumnWidths() {
+    parseColumnWidths(settings_.options.recipientKeyColumnWidths, recipientKeyColumnWidths_);
 }
 
-std::string MainWindow::selectedSigningFingerprint() const {
-    int index = signingBrowser_->value();
-    if (index <= 0 || index > static_cast<int>(signingKeys_.size())) {
-        return {};
-    }
-    return signingKeys_[index - 1].fingerprint;
+void MainWindow::saveRecipientKeyColumnWidths() {
+    settings_.options.recipientKeyColumnWidths =
+        serializeColumnWidths(recipientKeyColumnWidths_.data(), PrivateKeyColumnCount);
+    saveSettings();
 }
 
-const GpgKey* MainWindow::selectedEncryptionKey() const {
-    int index = encryptionBrowser_->value();
-    if (index <= 0 || index > static_cast<int>(encryptionKeys_.size())) {
+const GpgKey* MainWindow::selectedEncryptRecipientKey() const {
+    int index = encryptRecipientBrowser_->value();
+    if (index <= 0 || index > static_cast<int>(recipientKeys_.size())) {
         return nullptr;
     }
-    return &encryptionKeys_[index - 1];
+    return &recipientKeys_[index - 1];
 }
 
-const GpgKey* MainWindow::selectedSigningKey() const {
-    int index = signingBrowser_->value();
+const GpgKey* MainWindow::selectedConfigRecipientKey() const {
+    int index = recipientsBrowser_->value();
+    if (index <= 0 || index > static_cast<int>(recipientKeys_.size())) {
+        return nullptr;
+    }
+    return &recipientKeys_[index - 1];
+}
+
+const GpgKey* MainWindow::selectedListedSigningKey() const {
+    int index = myKeyBrowser_->value();
     if (index <= 0 || index > static_cast<int>(signingKeys_.size())) {
         return nullptr;
     }
     return &signingKeys_[index - 1];
 }
 
-bool MainWindow::confirmKeyWarnings(const GpgKey& key, const std::string& usage) {
-    auto warnings = keyWarningText(key);
-    if (warnings.empty()) {
-        return true;
+const GpgKey* MainWindow::selectedSigningKey() const {
+    for (const auto& key : signingKeys_) {
+        if (key.fingerprint == settings_.keys.signingFingerprint) {
+            return &key;
+        }
     }
-    std::ostringstream message;
-    message << warnings << "\nEmpreinte : " << key.fingerprint << "\n\nContinuer pour " << usage << " ?";
-    return fl_choice("%s", "Annuler", "Continuer", "", message.str().c_str()) == 1;
+    return nullptr;
 }
 
-void MainWindow::updateLastTab() {
-    auto* selected = tabs_->value();
-    if (selected == keysTab_) {
-        settings_.window.lastTab = "keys";
-    } else if (selected == homeTab_) {
-        settings_.window.lastTab = "home";
-    } else if (selected == sendTab_) {
-        settings_.window.lastTab = "send";
-    } else if (selected == receiveTab_) {
-        settings_.window.lastTab = "receive";
-    } else if (selected == packageTab_) {
-        settings_.window.lastTab = "package";
-    } else if (selected == logTab_) {
-        settings_.window.lastTab = "log";
-    } else if (selected == textTab_) {
-        settings_.window.lastTab = "text";
-    } else if (selected == filesTab_) {
-        settings_.window.lastTab = "files";
-    } else {
-        settings_.window.lastTab = "configuration";
+bool MainWindow::gpgConfigured() const {
+    return gpgWorks_ && !settings_.gpg.executablePath.empty();
+}
+
+void MainWindow::setResult(Fl_Text_Buffer* buffer, const std::string& text) {
+    if (buffer) {
+        buffer->text(text.c_str());
     }
+}
+
+void MainWindow::setSigners(Fl_Hold_Browser* browser, const std::string& text) {
+    browser->clear();
+    auto signers = signerInfoFromGpgText(text);
+    if (signers.empty()) {
+        browser->add("Aucune signature");
+        return;
+    }
+    for (const auto& signer : signers) {
+        std::ostringstream row;
+        row << (signer.name.empty() ? "-" : signer.name) << '\t'
+            << (signer.email.empty() ? "-" : signer.email) << '\t'
+            << (signer.keyId.empty() ? "-" : signer.keyId) << '\t'
+            << (signer.status.empty() ? "Signature détectée" : signer.status);
+        browser->add(row.str().c_str());
+    }
+}
+
+void MainWindow::updateStatus(const std::string& message) {
+    if (gpgStatusOutput_) {
+        gpgStatusOutput_->value(message.c_str());
+        flashStatus();
+    }
+}
+
+void MainWindow::flashStatus() {
+    if (!gpgStatusOutput_) {
+        return;
+    }
+    statusFlashRemaining_ = 6;
+    gpgStatusOutput_->color(FL_YELLOW);
+    gpgStatusOutput_->redraw();
+    Fl::remove_timeout(onStatusFlash, this);
+    Fl::add_timeout(0.12, onStatusFlash, this);
+}
+
+void MainWindow::updatePreferredKeyOutput() {
+    if (!preferredKeyOutput_) {
+        return;
+    }
+    const auto* key = selectedSigningKey();
+    preferredKeyOutput_->value(key ? keyLabel(*key).c_str() : "Aucune clé préférée");
+}
+
+bool MainWindow::confirmOverwrite(const std::string& path) {
+    if (!fileExists(path)) {
+        return true;
+    }
+    struct DialogState {
+        bool accepted = false;
+        Fl_Window* dialog = nullptr;
+    } state;
+
+    auto* dialog = new Fl_Window(660, 180, "Confirmer l'écrasement");
+    state.dialog = dialog;
+    dialog->set_modal();
+    int x = 18;
+    int y = 20;
+    auto* question = new Fl_Box(x, y, dialog->w() - 36, RowHeight, "Le fichier existe déjà. Voulez-vous l'écraser ?");
+    question->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    y += RowHeight + 8;
+    auto* pathOutput = new Fl_Output(x, y, dialog->w() - 36, RowHeight);
+    pathOutput->value(path.c_str());
+    pathOutput->readonly(1);
+    y += RowHeight + 22;
+    auto* cancelButton = new Fl_Button(dialog->w() - 220, y, 95, RowHeight, "Annuler");
+    auto* overwriteButton = new Fl_Button(dialog->w() - 115, y, 95, RowHeight, "Écraser");
+    cancelButton->callback([](Fl_Widget*, void* data) {
+        static_cast<DialogState*>(data)->dialog->hide();
+    }, &state);
+    overwriteButton->callback([](Fl_Widget*, void* data) {
+        auto* dialogState = static_cast<DialogState*>(data);
+        dialogState->accepted = true;
+        dialogState->dialog->hide();
+    }, &state);
+    dialog->end();
+    dialog->show();
+    while (dialog->shown()) {
+        Fl::wait();
+    }
+    const bool accepted = state.accepted;
+    delete dialog;
+    return accepted;
+}
+
+std::string MainWindow::selectedSigningLabel() const {
+    const auto* key = selectedSigningKey();
+    return key ? keyLabel(*key) : std::string("aucune clé");
 }
 
 void MainWindow::onClose(Fl_Widget* widget, void* data) {
     auto* window = static_cast<MainWindow*>(data);
+    window->settings_.window.x = window->x();
+    window->settings_.window.y = window->y();
+    window->settings_.window.width = window->w();
+    window->settings_.window.height = window->h();
+    window->updateLastTab();
+    window->normalizeAndSaveEncryptedExtension();
+    window->normalizeAndSaveSignatureExtension();
     window->saveSettings();
     widget->hide();
+}
+
+void MainWindow::onStatusFlash(void* data) {
+    auto* window = static_cast<MainWindow*>(data);
+    if (!window->gpgStatusOutput_ || window->statusFlashRemaining_ <= 0) {
+        return;
+    }
+    --window->statusFlashRemaining_;
+    window->gpgStatusOutput_->color((window->statusFlashRemaining_ % 2) == 0 ? FL_YELLOW : FL_WHITE);
+    window->gpgStatusOutput_->redraw();
+    if (window->statusFlashRemaining_ > 0) {
+        Fl::repeat_timeout(0.12, onStatusFlash, data);
+    } else {
+        window->gpgStatusOutput_->color(FL_WHITE);
+        window->gpgStatusOutput_->redraw();
+    }
 }

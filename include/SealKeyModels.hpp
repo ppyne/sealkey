@@ -63,3 +63,4 @@ GpgIdentity identityFromKey(const GpgKey& key);
 GpgContact contactFromKey(const GpgKey& key);
 std::string shortFingerprint(const std::string& fingerprint);
 std::string displayNameFromUid(const std::string& uid);
+std::string formatGpgTimestampDate(const std::string& timestamp);

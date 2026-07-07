@@ -2,6 +2,16 @@
 
 #include <utility>
 
+namespace {
+const char* nullOutputPath() {
+#ifdef _WIN32
+    return "NUL";
+#else
+    return "/dev/null";
+#endif
+}
+}
+
 CryptoService::CryptoService(std::string gpgExecutable)
     : gpgExecutable_(std::move(gpgExecutable)) {}
 
@@ -35,6 +45,10 @@ GpgProcessResult CryptoService::decryptFile(const std::string& sourcePath,
     return GpgProcess::run(gpgExecutable_, decryptFileArguments(sourcePath, destinationPath));
 }
 
+GpgProcessResult CryptoService::inspectEncryptedFile(const std::string& sourcePath) const {
+    return GpgProcess::run(gpgExecutable_, inspectEncryptedFileArguments(sourcePath));
+}
+
 std::vector<std::string> CryptoService::encryptTextArguments(const std::string& recipientFingerprint, bool armor) {
     std::vector<std::string> args;
     if (armor) {
@@ -54,7 +68,7 @@ std::vector<std::string> CryptoService::encryptFileArguments(const std::string& 
                                                              const std::string& destinationPath,
                                                              const std::string& recipientFingerprint,
                                                              bool armor) {
-    std::vector<std::string> args = {"--yes", "--batch"};
+    std::vector<std::string> args = {"--yes", "--batch", "--trust-model", "always"};
     if (armor) {
         args.emplace_back("--armor");
     }
@@ -72,7 +86,7 @@ std::vector<std::string> CryptoService::encryptAndSignFileArguments(const std::s
                                                                     const std::string& recipientFingerprint,
                                                                     const std::string& signingFingerprint,
                                                                     bool armor) {
-    std::vector<std::string> args = {"--yes", "--batch"};
+    std::vector<std::string> args = {"--yes", "--batch", "--trust-model", "always"};
     if (armor) {
         args.emplace_back("--armor");
     }
@@ -90,5 +104,9 @@ std::vector<std::string> CryptoService::encryptAndSignFileArguments(const std::s
 
 std::vector<std::string> CryptoService::decryptFileArguments(const std::string& sourcePath,
                                                              const std::string& destinationPath) {
-    return {"--yes", "--decrypt", "--output", destinationPath, sourcePath};
+    return {"--status-fd", "1", "--yes", "--decrypt", "--output", destinationPath, sourcePath};
+}
+
+std::vector<std::string> CryptoService::inspectEncryptedFileArguments(const std::string& sourcePath) {
+    return {"--status-fd", "1", "--yes", "--decrypt", "--output", nullOutputPath(), sourcePath};
 }

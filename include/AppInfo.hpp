@@ -6,5 +6,5 @@ constexpr const char* FullName = "SealKey — Lightweight GPG desktop helper";
 constexpr const char* ProjectId = "sealkey";
 constexpr const char* ExecutableName = "sealkey";
 constexpr const char* PreferencesFile = "preferences.ini";
-constexpr const char* Version = "0.5.0";
+constexpr const char* Version = "0.6.0";
 }

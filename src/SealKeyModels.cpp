@@ -1,6 +1,8 @@
 #include "SealKeyModels.hpp"
 
 #include <algorithm>
+#include <ctime>
+#include <sstream>
 
 namespace {
 std::string trim(std::string value) {
@@ -24,6 +26,27 @@ std::string shortFingerprint(const std::string& fingerprint) {
         return fingerprint;
     }
     return fingerprint.substr(fingerprint.size() - 8);
+}
+
+std::string formatGpgTimestampDate(const std::string& timestamp) {
+    if (timestamp.empty()) {
+        return {};
+    }
+    try {
+        auto raw = static_cast<std::time_t>(std::stoll(timestamp));
+        std::tm tm{};
+#ifdef _WIN32
+        gmtime_s(&tm, &raw);
+#else
+        gmtime_r(&raw, &tm);
+#endif
+        char buffer[16] = {};
+        if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &tm) > 0) {
+            return buffer;
+        }
+    } catch (...) {
+    }
+    return timestamp;
 }
 
 GpgIdentity identityFromKey(const GpgKey& key) {

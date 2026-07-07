@@ -51,6 +51,17 @@ void applyCapabilities(GpgKey& key) {
 bool isPrimaryRecord(const std::string& recordType) {
     return recordType == "pub" || recordType == "sec";
 }
+
+std::string upperAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return value;
+}
+
+bool hasProfileId(const std::string& profileId, const char* expected) {
+    return profileId == expected;
+}
 }
 
 KeyStore::KeyStore(std::string gpgExecutable) : gpgExecutable_(std::move(gpgExecutable)) {}
@@ -144,8 +155,106 @@ std::string KeyStore::exportPublicKey(const std::string& fingerprint, std::strin
     return result.standardOutput;
 }
 
+std::string KeyStore::exportSecretKey(const std::string& fingerprint, std::string* errorText) const {
+    if (errorText) {
+        errorText->clear();
+    }
+    auto result = GpgProcess::run(gpgExecutable_, {"--armor", "--export-secret-keys", fingerprint});
+    if (!result.success()) {
+        if (errorText) {
+            *errorText = result.errorMessage.empty() ? result.standardError : result.errorMessage;
+        }
+        return {};
+    }
+    return result.standardOutput;
+}
+
 GpgProcessResult KeyStore::importPublicKey(const std::string& filePath) const {
     return GpgProcess::run(gpgExecutable_, {"--import", filePath});
+}
+
+GpgProcessResult KeyStore::deletePublicKey(const std::string& fingerprint) const {
+    return GpgProcess::run(gpgExecutable_, {"--batch", "--yes", "--delete-key", fingerprint});
+}
+
+GpgProcessResult KeyStore::deleteSecretAndPublicKey(const std::string& fingerprint) const {
+    return GpgProcess::run(gpgExecutable_, {"--batch", "--yes", "--delete-secret-and-public-key", fingerprint});
+}
+
+GpgProcessResult KeyStore::generatePrivateKey(const std::string& name,
+                                              const std::string& email,
+                                              const std::string& comment,
+                                              const std::string& expires,
+                                              const std::string& profileId) const {
+    std::string uid = name;
+    if (!comment.empty()) {
+        uid += " (" + comment + ")";
+    }
+    if (!email.empty()) {
+        uid += " <" + email + ">";
+    }
+    return GpgProcess::run(gpgExecutable_, generatePrivateKeyArguments(uid, expires, profileId));
+}
+
+GpgProcessResult KeyStore::addEncryptionSubkey(const std::string& fingerprint,
+                                               const std::string& expires,
+                                               const std::string& profileId) const {
+    return GpgProcess::run(gpgExecutable_, addEncryptionSubkeyArguments(fingerprint, expires, profileId));
+}
+
+GpgProcessResult KeyStore::importOwnerTrust(const std::string& fingerprint, int trustLevel) const {
+    std::ostringstream input;
+    input << fingerprint << ':' << trustLevel << ":\n";
+    return GpgProcess::run(gpgExecutable_, {"--import-ownertrust"}, input.str());
+}
+
+std::vector<std::string> KeyStore::generatePrivateKeyArguments(const std::string& uid,
+                                                               const std::string& expires,
+                                                               const std::string& profileId) {
+    std::string algorithm = "default";
+    std::string usage = "default";
+    if (hasProfileId(profileId, "rsa3072")) {
+        algorithm = "rsa3072";
+    } else if (hasProfileId(profileId, "rsa4096")) {
+        algorithm = "rsa4096";
+    } else if (hasProfileId(profileId, "ed25519-cv25519")) {
+        algorithm = "ed25519";
+        usage = "cert,sign";
+    }
+    return {"--batch", "--yes", "--no-tty", "--quick-generate-key", uid, algorithm, usage, expires};
+}
+
+std::vector<std::string> KeyStore::addEncryptionSubkeyArguments(const std::string& fingerprint,
+                                                                const std::string& expires,
+                                                                const std::string& profileId) {
+    if (hasProfileId(profileId, "ed25519-cv25519")) {
+        return {"--batch", "--yes", "--no-tty", "--quick-add-key", fingerprint, "cv25519", "encrypt", expires};
+    }
+    return {};
+}
+
+std::vector<KeyGenerationProfile> KeyStore::availableKeyGenerationProfiles(const std::string& gpgVersionOutput) {
+    std::vector<KeyGenerationProfile> profiles;
+    profiles.push_back({"default", "Défaut GPG", "Profil recommandé par la version de GPG sélectionnée.", false});
+    profiles.push_back({"rsa3072", "RSA 3072", "Clé RSA avec capacités de signature et chiffrement.", false});
+    profiles.push_back({"rsa4096", "RSA 4096", "Clé RSA avec capacités de signature et chiffrement.", false});
+
+    auto version = upperAscii(gpgVersionOutput);
+    if (version.find("EDDSA") != std::string::npos && version.find("ECDH") != std::string::npos) {
+        profiles.push_back({"ed25519-cv25519",
+                            "Ed25519 + Curve25519",
+                            "Clé Ed25519 pour signer, avec sous-clé Curve25519 pour chiffrer.",
+                            true});
+    }
+    return profiles;
+}
+
+std::vector<KeyGenerationProfile> KeyStore::availableKeyGenerationProfiles() const {
+    auto result = GpgProcess::run(gpgExecutable_, {"--version"});
+    if (!result.success()) {
+        return availableKeyGenerationProfiles({});
+    }
+    return availableKeyGenerationProfiles(result.standardOutput);
 }
 
 std::vector<GpgKey> KeyStore::parseColonListing(const std::string& text, bool secretListing) {

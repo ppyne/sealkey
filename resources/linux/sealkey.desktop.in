@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SealKey
+Comment=Lightweight GPG desktop helper
+Exec=sealkey
+Icon=sealkey
+Terminal=false
+Categories=Utility;Security;

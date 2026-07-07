@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="512" height="512" viewBox="0 0 512 512"
+     role="img" aria-labelledby="title desc">
+  <title id="title">SealKey red seal icon</title>
+  <desc id="desc">Red wax seal with concentric white rings and a white keyhole.</desc>
+
+  <path fill="#C8102E" d="
+    M256 28
+    C278 28 296 44 316 49
+    C337 54 360 47 379 58
+    C398 69 405 92 421 107
+    C437 122 461 128 472 147
+    C483 166 476 189 481 210
+    C486 231 502 249 502 271
+    C502 293 486 311 481 332
+    C476 353 483 376 472 395
+    C461 414 437 420 421 435
+    C405 450 398 473 379 484
+    C360 495 337 488 316 493
+    C296 498 278 514 256 514
+    C234 514 216 498 196 493
+    C175 488 152 495 133 484
+    C114 473 107 450 91 435
+    C75 420 51 414 40 395
+    C29 376 36 353 31 332
+    C26 311 10 293 10 271
+    C10 249 26 231 31 210
+    C36 189 29 166 40 147
+    C51 128 75 122 91 107
+    C107 92 114 69 133 58
+    C152 47 175 54 196 49
+    C216 44 234 28 256 28
+    Z"/>
+
+  <circle cx="256" cy="271" r="154"
+          fill="none" stroke="#FFFFFF" stroke-width="14"/>
+  <circle cx="256" cy="271" r="132"
+          fill="none" stroke="#FFFFFF" stroke-width="6" opacity="0.9"/>
+
+  <path fill="#FFFFFF" d="
+    M256 178
+    C226 178 202 202 202 232
+    C202 252 213 270 230 279
+    L214 348
+    C212 357 219 366 229 366
+    H283
+    C293 366 300 357 298 348
+    L282 279
+    C299 270 310 252 310 232
+    C310 202 286 178 256 178
+    Z"/>
+</svg>

@@ -58,7 +58,12 @@ AppSettings SettingsService::load() const {
     settings.paths.lastSignatureSaveDir = ini.getString("paths", "last_signature_save_dir", settings.paths.lastSignatureSaveDir);
 
     settings.options.armor = ini.getBool("options", "armor", settings.options.armor);
+    settings.options.encryptAndSign = ini.getBool("options", "encrypt_and_sign", settings.options.encryptAndSign);
     settings.options.signatureType = ini.getString("options", "signature_type", settings.options.signatureType);
+    settings.options.encryptedFileExtension = ini.getString("options", "encrypted_file_extension", settings.options.encryptedFileExtension);
+    settings.options.signatureFileExtension = ini.getString("options", "signature_file_extension", settings.options.signatureFileExtension);
+    settings.options.privateKeyColumnWidths = ini.getString("options", "private_key_column_widths", settings.options.privateKeyColumnWidths);
+    settings.options.recipientKeyColumnWidths = ini.getString("options", "recipient_key_column_widths", settings.options.recipientKeyColumnWidths);
     return settings;
 }
 
@@ -89,7 +94,12 @@ bool SettingsService::save(const AppSettings& settings) const {
     ini.set("paths", "last_signature_open_dir", settings.paths.lastSignatureOpenDir);
     ini.set("paths", "last_signature_save_dir", settings.paths.lastSignatureSaveDir);
     ini.setBool("options", "armor", settings.options.armor);
+    ini.setBool("options", "encrypt_and_sign", settings.options.encryptAndSign);
     ini.set("options", "signature_type", settings.options.signatureType);
+    ini.set("options", "encrypted_file_extension", settings.options.encryptedFileExtension);
+    ini.set("options", "signature_file_extension", settings.options.signatureFileExtension);
+    ini.set("options", "private_key_column_widths", settings.options.privateKeyColumnWidths);
+    ini.set("options", "recipient_key_column_widths", settings.options.recipientKeyColumnWidths);
 
     auto target = preferencesFile();
     auto temp = target;

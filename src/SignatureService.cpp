@@ -99,11 +99,11 @@ std::vector<std::string> SignatureService::signFileDetachedArguments(const std::
 
 std::vector<std::string> SignatureService::verifyDetachedFileArguments(const std::string& signaturePath,
                                                                        const std::string& sourcePath) {
-    return {"--verify", signaturePath, sourcePath};
+    return {"--status-fd", "1", "--verify", signaturePath, sourcePath};
 }
 
 std::vector<std::string> SignatureService::verifySignedFileArguments(const std::string& signedFilePath) {
-    return {"--verify", signedFilePath};
+    return {"--status-fd", "1", "--verify", signedFilePath};
 }
 
 VerificationSummary SignatureService::summarizeVerification(const GpgProcessResult& result) {

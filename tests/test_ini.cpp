@@ -6,6 +6,7 @@
 
 void runKeyParserTests();
 void runGpgArgumentTests();
+void runSealKeyPathTests();
 
 namespace {
 void testIniParsing() {
@@ -35,13 +36,28 @@ void testIniSerialization() {
     assert(parsed.getString("gpg", "executable", "") == "/usr/bin/gpg");
     assert(parsed.getBool("options", "armor", false));
 }
+
+void testSettingsDefaults() {
+    AppSettings settings;
+    assert(!settings.options.encryptAndSign);
+    assert(settings.options.encryptedFileExtension == "gpg");
+    assert(settings.options.signatureFileExtension == "sig");
+    assert(settings.options.privateKeyColumnWidths == "110,155,85,285,70,85");
+    assert(settings.options.recipientKeyColumnWidths == "110,155,85,285,70,85");
+    settings.gpg.executablePath = "/usr/bin/gpg";
+    settings.keys.signingFingerprint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    assert(settings.gpg.executablePath == "/usr/bin/gpg");
+    assert(settings.keys.signingFingerprint == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+}
 }
 
 int main() {
     testIniParsing();
     testIniSerialization();
+    testSettingsDefaults();
     runKeyParserTests();
     runGpgArgumentTests();
+    runSealKeyPathTests();
     std::cout << "sealkey_tests passed\n";
     return 0;
 }
