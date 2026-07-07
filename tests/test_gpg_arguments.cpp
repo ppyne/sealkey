@@ -28,6 +28,12 @@ void runGpgArgumentTests() {
     assert((decryptFileArgs == std::vector<std::string>{
                                   "--yes", "--decrypt", "--output", "plain.txt", "plain.txt.asc"}));
 
+    auto encryptSignArgs = CryptoService::encryptAndSignFileArguments("plain.txt", "plain.txt.gpg", fingerprint, fingerprint, true);
+    assert((encryptSignArgs == std::vector<std::string>{
+                                  "--yes", "--batch", "--armor", "--encrypt", "--sign",
+                                  "--recipient", fingerprint, "--local-user", fingerprint,
+                                  "--output", "plain.txt.gpg", "plain.txt"}));
+
     auto signFileArgs = SignatureService::signFileDetachedArguments("plain.txt", "plain.txt.asc.sig", fingerprint);
     assert((signFileArgs == std::vector<std::string>{
                               "--armor", "--detach-sign", "--local-user", fingerprint,

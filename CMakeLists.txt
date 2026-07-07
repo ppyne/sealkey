@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(sealkey VERSION 0.4.0 LANGUAGES CXX)
+project(sealkey VERSION 0.5.0 LANGUAGES CXX)
 
 option(USE_SYSTEM_FLTK "Use an installed FLTK package" ON)
 option(BUILD_STATIC "Prefer static linking where practical" ON)
@@ -18,6 +18,7 @@ add_library(sealkey_core
     src/GpgProcess.cpp
     src/IniFile.cpp
     src/KeyStore.cpp
+    src/SealKeyModels.cpp
     src/SettingsService.cpp
     src/SignatureService.cpp
 )

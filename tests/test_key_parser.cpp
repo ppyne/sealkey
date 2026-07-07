@@ -1,4 +1,5 @@
 #include "KeyStore.hpp"
+#include "SealKeyModels.hpp"
 
 #include <cassert>
 
@@ -31,4 +32,14 @@ void runKeyParserTests() {
     assert(secretKeys[0].hasSecretKey);
     assert(secretKeys[0].canSign);
     assert(!secretKeys[0].canEncrypt);
+
+    auto contact = contactFromKey(publicKeys[0]);
+    assert(contact.name == "Alice Example");
+    assert(contact.email == "alice@example.test");
+    assert(contact.canEncrypt);
+    assert(shortFingerprint(contact.fingerprint) == "AAAAAAAA");
+
+    auto identity = identityFromKey(secretKeys[0]);
+    assert(identity.name == "Bob Example");
+    assert(identity.canSign);
 }

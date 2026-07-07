@@ -144,6 +144,10 @@ std::string KeyStore::exportPublicKey(const std::string& fingerprint, std::strin
     return result.standardOutput;
 }
 
+GpgProcessResult KeyStore::importPublicKey(const std::string& filePath) const {
+    return GpgProcess::run(gpgExecutable_, {"--import", filePath});
+}
+
 std::vector<GpgKey> KeyStore::parseColonListing(const std::string& text, bool secretListing) {
     std::vector<GpgKey> keys;
     GpgKey* current = nullptr;

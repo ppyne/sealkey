@@ -21,6 +21,15 @@ GpgProcessResult CryptoService::encryptFile(const std::string& sourcePath,
     return GpgProcess::run(gpgExecutable_, encryptFileArguments(sourcePath, destinationPath, recipientFingerprint, armor));
 }
 
+GpgProcessResult CryptoService::encryptAndSignFile(const std::string& sourcePath,
+                                                   const std::string& destinationPath,
+                                                   const std::string& recipientFingerprint,
+                                                   const std::string& signingFingerprint,
+                                                   bool armor) const {
+    return GpgProcess::run(gpgExecutable_,
+                           encryptAndSignFileArguments(sourcePath, destinationPath, recipientFingerprint, signingFingerprint, armor));
+}
+
 GpgProcessResult CryptoService::decryptFile(const std::string& sourcePath,
                                             const std::string& destinationPath) const {
     return GpgProcess::run(gpgExecutable_, decryptFileArguments(sourcePath, destinationPath));
@@ -52,6 +61,27 @@ std::vector<std::string> CryptoService::encryptFileArguments(const std::string& 
     args.emplace_back("--encrypt");
     args.emplace_back("--recipient");
     args.emplace_back(recipientFingerprint);
+    args.emplace_back("--output");
+    args.emplace_back(destinationPath);
+    args.emplace_back(sourcePath);
+    return args;
+}
+
+std::vector<std::string> CryptoService::encryptAndSignFileArguments(const std::string& sourcePath,
+                                                                    const std::string& destinationPath,
+                                                                    const std::string& recipientFingerprint,
+                                                                    const std::string& signingFingerprint,
+                                                                    bool armor) {
+    std::vector<std::string> args = {"--yes", "--batch"};
+    if (armor) {
+        args.emplace_back("--armor");
+    }
+    args.emplace_back("--encrypt");
+    args.emplace_back("--sign");
+    args.emplace_back("--recipient");
+    args.emplace_back(recipientFingerprint);
+    args.emplace_back("--local-user");
+    args.emplace_back(signingFingerprint);
     args.emplace_back("--output");
     args.emplace_back(destinationPath);
     args.emplace_back(sourcePath);

@@ -1,12 +1,14 @@
 # SealKey
 
-SealKey is a lightweight FLTK desktop helper for the local `gpg` executable.
+SealKey is a lightweight FLTK desktop assistant for common local `gpg` workflows.
 
-Version 0.4 provides:
+Version 0.5 shifts the product toward human use cases:
 
 - a C++20/CMake project structure;
 - an FLTK application named `sealkey`;
-- Configuration, Clés, Texte, Fichiers and Journal tabs;
+- an Accueil screen organized around intentions rather than raw GPG verbs;
+- guided Envoyer, Recevoir and Préparer flows;
+- preserved advanced Configuration, Clés, Texte, Fichiers and Journal tabs;
 - non-sensitive INI preferences in the standard user configuration directory;
 - window geometry persistence;
 - `gpg` executable selection, auto-detection and `gpg --version` test;
@@ -28,7 +30,11 @@ Version 0.4 provides:
 - visible warnings before using expired, revoked or not fully trusted keys;
 - explicit clipboard clearing;
 - journal clearing;
-- full last-tab restoration and safer restored window placement.
+- full last-tab restoration and safer restored window placement;
+- simple business objects for local identities, contacts, user operations and operation results;
+- result displays with a clear user message and separate technical GPG details;
+- public-key import from the main workflow;
+- package generation with protected files, optional sender public key and README.txt.
 
 The application calls `gpg` as an external process and passes arguments as a vector. It does not use Qt, wxWidgets, GTK, Electron, libgpgme or OpenSSL, and it does not store passphrases or secrets.
 
@@ -66,4 +72,6 @@ Stored values include window geometry, last tab, selected `gpg` executable, sele
 
 Text operations use stdin/stdout. File operations pass explicit source, destination and signature paths to `gpg` as argument vectors. SealKey does not store source text, encrypted text, signatures, passphrases, file contents or operation outputs in preferences. The Journal tab records only short operation status messages.
 
-Remaining work before 1.0 is mostly distribution quality: platform packaging, icon, broader integration tests and platform-specific build documentation.
+The v0.5 assistants are intentionally simple first iterations. The package flow supports multiple files by adding them one by one, and recipient selection is a direct list of public encryption keys rather than a full address book.
+
+Remaining work before 1.0 is mostly distribution quality and polish: platform packaging, icon, broader integration tests, platform-specific build documentation, drag-and-drop and a richer contact/address-book view.

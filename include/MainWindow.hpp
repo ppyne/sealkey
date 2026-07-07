@@ -10,6 +10,7 @@
 
 class Fl_Box;
 class Fl_Button;
+class Fl_Check_Button;
 class Fl_Choice;
 class Fl_Group;
 class Fl_Hold_Browser;
@@ -29,6 +30,7 @@ private:
     void buildInterface();
     void loadInitialState();
     void saveSettings();
+    void updateHomeStatus();
     void updateGpgPath(const std::string& path, bool saveNow);
     void chooseGpgExecutable();
     void autoDetectGpg();
@@ -44,6 +46,19 @@ private:
     void chooseFileDestination();
     void chooseSignatureFile(bool saveMode);
     void executeFileOperation();
+    void chooseSendSource();
+    void chooseSendOutput();
+    void executeSendOperation();
+    void chooseReceiveFile();
+    void chooseReceiveOutput();
+    void chooseReceiveOriginal();
+    void executeReceiveOperation();
+    void addPackageFile();
+    void clearPackageFiles();
+    void choosePackageOutputDir();
+    void executePackageOperation();
+    void importPublicKey();
+    void goToTab(Fl_Group* tab);
     void populateKeyBrowsers();
     void restoreKeySelections();
     void appendLog(const std::string& message);
@@ -64,6 +79,10 @@ private:
     std::vector<GpgKey> signingKeys_;
 
     Fl_Tabs* tabs_ = nullptr;
+    Fl_Group* homeTab_ = nullptr;
+    Fl_Group* sendTab_ = nullptr;
+    Fl_Group* receiveTab_ = nullptr;
+    Fl_Group* packageTab_ = nullptr;
     Fl_Group* configurationTab_ = nullptr;
     Fl_Group* keysTab_ = nullptr;
     Fl_Group* textTab_ = nullptr;
@@ -85,6 +104,27 @@ private:
     Fl_Input* fileDestinationInput_ = nullptr;
     Fl_Input* fileSignatureInput_ = nullptr;
     Fl_Output* fileStatusOutput_ = nullptr;
+    Fl_Output* homeStatusOutput_ = nullptr;
+    Fl_Input* sendSourceInput_ = nullptr;
+    Fl_Hold_Browser* sendRecipientBrowser_ = nullptr;
+    Fl_Choice* sendActionChoice_ = nullptr;
+    Fl_Input* sendOutputInput_ = nullptr;
+    Fl_Text_Buffer* sendResultBuffer_ = nullptr;
+    Fl_Text_Display* sendResultDisplay_ = nullptr;
+    Fl_Input* receiveFileInput_ = nullptr;
+    Fl_Input* receiveOutputInput_ = nullptr;
+    Fl_Input* receiveOriginalInput_ = nullptr;
+    Fl_Output* receiveDetectedOutput_ = nullptr;
+    Fl_Text_Buffer* receiveResultBuffer_ = nullptr;
+    Fl_Text_Display* receiveResultDisplay_ = nullptr;
+    Fl_Hold_Browser* packageFilesBrowser_ = nullptr;
+    Fl_Hold_Browser* packageRecipientBrowser_ = nullptr;
+    Fl_Choice* packageActionChoice_ = nullptr;
+    Fl_Check_Button* packageIncludePublicKeyCheck_ = nullptr;
+    Fl_Input* packageOutputDirInput_ = nullptr;
+    Fl_Text_Buffer* packageResultBuffer_ = nullptr;
+    Fl_Text_Display* packageResultDisplay_ = nullptr;
+    std::vector<std::string> packageFiles_;
     Fl_Text_Buffer* logBuffer_ = nullptr;
     Fl_Text_Display* logDisplay_ = nullptr;
 };
