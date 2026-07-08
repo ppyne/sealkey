@@ -171,10 +171,10 @@ Sur Debian/Ubuntu, quand `USE_SYSTEM_FLTK=OFF`, installez typiquement les dépen
 sudo apt install libxft-dev libfontconfig1-dev libfreetype-dev libxrender-dev
 ```
 
-Pour un rendu plus moderne avec FLTK 1.4 et le backend Wayland/Cairo/Pango, installez aussi :
+Pour un rendu plus moderne avec FLTK 1.4 et le backend Wayland/Cairo/Pango, installez aussi les dépendances Wayland et les en-têtes X11 requis par le build hybride Wayland/X11 de FLTK :
 
 ```bash
-sudo apt install libpango1.0-dev libcairo2-dev libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev
+sudo apt install libpango1.0-dev libcairo2-dev libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev libxfixes-dev libxcursor-dev libxinerama-dev
 ```
 
 Pour utiliser une installation FLTK déjà disponible sur le système :
