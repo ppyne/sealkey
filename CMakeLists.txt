@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(sealkey VERSION 0.6.0 LANGUAGES CXX)
+project(sealkey VERSION 0.6.1 LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 option(USE_SYSTEM_FLTK "Use an installed FLTK package" ON)
 option(BUILD_STATIC "Prefer static linking where practical" ON)
@@ -94,6 +96,13 @@ if(BUILD_GUI)
     target_include_directories(sealkey PRIVATE include)
     target_link_libraries(sealkey PRIVATE sealkey_core)
 
+    if(UNIX AND NOT APPLE)
+        target_compile_definitions(sealkey PRIVATE
+            SEALKEY_SOURCE_ICON_PATH="${CMAKE_CURRENT_SOURCE_DIR}/icons/linux_icons/sealkey_256x256.png"
+            SEALKEY_INSTALLED_ICON_PATH="${CMAKE_INSTALL_FULL_DATAROOTDIR}/icons/hicolor/256x256/apps/sealkey.png"
+        )
+    endif()
+
     if(TARGET fltk::fltk)
         target_link_libraries(sealkey PRIVATE fltk::fltk)
     elseif(TARGET fltk)
@@ -101,6 +110,18 @@ if(BUILD_GUI)
     else()
         target_include_directories(sealkey PRIVATE ${FLTK_INCLUDE_DIR})
         target_link_libraries(sealkey PRIVATE ${FLTK_LIBRARIES})
+    endif()
+
+    if(UNIX AND NOT APPLE)
+        if(TARGET fltk::images)
+            target_link_libraries(sealkey PRIVATE fltk::images)
+        elseif(TARGET fltk_images)
+            target_link_libraries(sealkey PRIVATE fltk_images)
+        elseif(FLTK_IMAGES_LIBRARIES)
+            target_link_libraries(sealkey PRIVATE ${FLTK_IMAGES_LIBRARIES})
+        elseif(FLTK_IMAGES_LIBRARY)
+            target_link_libraries(sealkey PRIVATE ${FLTK_IMAGES_LIBRARY})
+        endif()
     endif()
 
     if(MSVC)
@@ -121,30 +142,30 @@ if(BUILD_GUI)
             @ONLY
         )
         install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sealkey.desktop"
-            DESTINATION share/applications
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
         )
         install(FILES icons/linux_icons/sealkey.svg
-            DESTINATION share/icons/hicolor/scalable/apps
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
             RENAME sealkey.svg
         )
         install(FILES icons/linux_icons/sealkey_16x16.png
-            DESTINATION share/icons/hicolor/16x16/apps
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/16x16/apps
             RENAME sealkey.png
         )
         install(FILES icons/linux_icons/sealkey_32x32.png
-            DESTINATION share/icons/hicolor/32x32/apps
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/32x32/apps
             RENAME sealkey.png
         )
         install(FILES icons/linux_icons/sealkey_48x48.png
-            DESTINATION share/icons/hicolor/48x48/apps
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/48x48/apps
             RENAME sealkey.png
         )
         install(FILES icons/linux_icons/sealkey_128x128.png
-            DESTINATION share/icons/hicolor/128x128/apps
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/128x128/apps
             RENAME sealkey.png
         )
         install(FILES icons/linux_icons/sealkey_256x256.png
-            DESTINATION share/icons/hicolor/256x256/apps
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps
             RENAME sealkey.png
         )
     endif()

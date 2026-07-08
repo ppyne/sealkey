@@ -4,7 +4,7 @@
 
 SealKey is a lightweight FLTK desktop assistant for common local `gpg` workflows.
 
-Version 0.6 replaces the earlier assistant-style interface with five direct GPG operation tabs:
+Version 0.6.1 builds on the v0.6 interface with five direct GPG operation tabs:
 
 - a C++20/CMake project structure;
 - an FLTK application named `sealkey`;
@@ -32,7 +32,7 @@ Version 0.6 replaces the earlier assistant-style interface with five direct GPG 
 - full last-tab restoration;
 - simple business objects for local identities, contacts, user operations and operation results;
 - result displays with clear user messages and technical GPG details;
-- platform icons for Windows, macOS and Linux, plus a Linux desktop entry for installed builds.
+- platform icons for Windows, macOS and Linux, including a runtime Linux window icon and a desktop entry with a matching window class for taskbar icon association.
 
 The application calls `gpg` as an external process and passes arguments as a vector. It does not use Qt, wxWidgets, GTK, Electron, libgpgme or OpenSSL, and it does not store passphrases or secrets.
 

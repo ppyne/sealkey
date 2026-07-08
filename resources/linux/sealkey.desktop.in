@@ -4,5 +4,6 @@ Name=SealKey
 Comment=Lightweight GPG desktop helper
 Exec=sealkey
 Icon=sealkey
+StartupWMClass=sealkey
 Terminal=false
 Categories=Utility;Security;
