@@ -165,6 +165,18 @@ ctest --test-dir build --output-on-failure
 
 Un accès réseau peut être nécessaire quand `USE_SYSTEM_FLTK=OFF` et que `third_party/fltk` est absent.
 
+Sur Debian/Ubuntu, quand `USE_SYSTEM_FLTK=OFF`, installez typiquement les dépendances Xft/fontconfig avant de reconstruire FLTK afin d'obtenir un rendu de texte antialiasé :
+
+```bash
+sudo apt install libxft-dev libfontconfig1-dev libfreetype-dev libxrender-dev
+```
+
+Pour un rendu plus moderne avec FLTK 1.4 et le backend Wayland/Cairo/Pango, installez aussi :
+
+```bash
+sudo apt install libpango1.0-dev libcairo2-dev libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev
+```
+
 Pour utiliser une installation FLTK déjà disponible sur le système :
 
 ```bash
