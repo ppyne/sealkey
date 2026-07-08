@@ -14,6 +14,7 @@ SealKey permet de :
 
 - localiser et tester l'exécutable `gpg`;
 - créer une clé personnelle;
+- importer une clé privée existante dans le trousseau GPG local;
 - importer la clé publique d'un correspondant;
 - choisir une clé de chiffrement;
 - choisir une clé de signature;
@@ -133,13 +134,17 @@ La version 0.6.1 fournit :
 - l'export ASCII-armored d'une clé publique;
 - l'import de clés publiques de correspondants;
 - la création de clés privées via `gpg --quick-generate-key`;
+- l'import de clés privées existantes via GPG;
 - l'export explicite d'une clé privée après confirmation;
 - la suppression explicite de clés publiques ou privées après confirmation;
 - le chiffrement de fichiers, avec option de signature simultanée;
 - le déchiffrement de fichiers;
-- la signature détachée de fichiers;
+- la signature détachée de fichiers avec confirmation d'écrasement gérée par SealKey;
 - la vérification de signatures détachées;
 - des diagnostics plus clairs pour les signatures valides, invalides, inconnues, expirées, révoquées ou non fiables;
+- l'affichage des signataires avec date de signature formatée quand GPG la fournit;
+- l'affichage chronologique des sorties GPG dans les onglets d'opération, en police monospace, avec messages SealKey en bleu, stdout en noir, stderr en rouge et code de sortie GPG final en magenta;
+- la séparation des sorties utilisateur de GPG et du flux technique `--status-fd` utilisé en interne pour identifier les signataires;
 - la restauration du dernier onglet et de la géométrie de fenêtre;
 - des icônes Windows, macOS et Linux, avec intégration Linux via fichier `.desktop`.
 

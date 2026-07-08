@@ -79,6 +79,11 @@ GpgProcessResult SignatureService::verifyDetachedFile(const std::string& signatu
     return GpgProcess::run(gpgExecutable_, verifyDetachedFileArguments(signaturePath, sourcePath));
 }
 
+GpgProcessResult SignatureService::inspectDetachedFile(const std::string& signaturePath,
+                                                       const std::string& sourcePath) const {
+    return GpgProcess::run(gpgExecutable_, inspectDetachedFileArguments(signaturePath, sourcePath));
+}
+
 GpgProcessResult SignatureService::verifySignedFile(const std::string& signedFilePath) const {
     return GpgProcess::run(gpgExecutable_, verifySignedFileArguments(signedFilePath));
 }
@@ -94,16 +99,21 @@ std::vector<std::string> SignatureService::verifyTextArguments() {
 std::vector<std::string> SignatureService::signFileDetachedArguments(const std::string& sourcePath,
                                                                      const std::string& signaturePath,
                                                                      const std::string& signingFingerprint) {
-    return {"--armor", "--detach-sign", "--local-user", signingFingerprint, "--output", signaturePath, sourcePath};
+    return {"--yes", "--no-tty", "--armor", "--detach-sign", "--local-user", signingFingerprint, "--output", signaturePath, sourcePath};
 }
 
 std::vector<std::string> SignatureService::verifyDetachedFileArguments(const std::string& signaturePath,
                                                                        const std::string& sourcePath) {
+    return {"--verify", signaturePath, sourcePath};
+}
+
+std::vector<std::string> SignatureService::inspectDetachedFileArguments(const std::string& signaturePath,
+                                                                        const std::string& sourcePath) {
     return {"--status-fd", "1", "--verify", signaturePath, sourcePath};
 }
 
 std::vector<std::string> SignatureService::verifySignedFileArguments(const std::string& signedFilePath) {
-    return {"--status-fd", "1", "--verify", signedFilePath};
+    return {"--verify", signedFilePath};
 }
 
 VerificationSummary SignatureService::summarizeVerification(const GpgProcessResult& result) {

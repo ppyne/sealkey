@@ -173,6 +173,10 @@ GpgProcessResult KeyStore::importPublicKey(const std::string& filePath) const {
     return GpgProcess::run(gpgExecutable_, {"--import", filePath});
 }
 
+GpgProcessResult KeyStore::importPrivateKey(const std::string& filePath) const {
+    return GpgProcess::run(gpgExecutable_, {"--import", filePath});
+}
+
 GpgProcessResult KeyStore::deletePublicKey(const std::string& fingerprint) const {
     return GpgProcess::run(gpgExecutable_, {"--batch", "--yes", "--delete-key", fingerprint});
 }

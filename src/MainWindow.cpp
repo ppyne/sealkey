@@ -48,7 +48,20 @@ constexpr int LabelWidth = 190;
 constexpr int ButtonWidth = 92;
 constexpr int PrivateKeyColumnCount = 6;
 constexpr int MinPrivateKeyColumnWidth = 45;
-int SignerColumnWidths[] = {220, 220, 170, 160, 0};
+int SignerColumnWidths[] = {180, 180, 160, 100, 150, 0};
+constexpr char ResultStyleService = 'A';
+constexpr char ResultStyleNormal = 'B';
+constexpr char ResultStyleStderr = 'C';
+constexpr char ResultStyleExitCode = 'D';
+constexpr Fl_Font ResultFont = FL_COURIER;
+constexpr Fl_Fontsize ResultFontSize = 12;
+
+const Fl_Text_Display::Style_Table_Entry ResultStyleTable[] = {
+    {FL_BLUE, ResultFont, ResultFontSize, 0, 0},
+    {FL_BLACK, ResultFont, ResultFontSize, 0, 0},
+    {FL_RED, ResultFont, ResultFontSize, 0, 0},
+    {FL_MAGENTA, ResultFont, ResultFontSize, 0, 0},
+};
 
 std::string valueOf(Fl_Input* input) {
     return input && input->value() ? input->value() : "";
@@ -133,6 +146,65 @@ std::string diagnosticText(const GpgProcessResult& result) {
     return out.str();
 }
 
+std::string chronologicalProcessText(const GpgProcessResult& result) {
+    std::ostringstream output;
+    bool hasOutput = false;
+    if (!result.errorMessage.empty()) {
+        output << result.errorMessage;
+        hasOutput = true;
+    } else if (!result.outputChunks.empty()) {
+        for (const auto& chunk : result.outputChunks) {
+            output << chunk.text;
+        }
+        hasOutput = true;
+    } else if (!result.standardOutput.empty() && !result.standardError.empty()) {
+        output << result.standardOutput << "\n" << result.standardError;
+        hasOutput = true;
+    } else if (!result.standardOutput.empty()) {
+        output << result.standardOutput;
+        hasOutput = true;
+    } else if (!result.standardError.empty()) {
+        output << result.standardError;
+        hasOutput = true;
+    }
+    if (hasOutput) {
+        output << "\n";
+    }
+    output << "Code de sortie GPG : " << result.exitCode;
+    return output.str();
+}
+
+std::string chronologicalProcessStyle(const GpgProcessResult& result) {
+    const auto exitCodeLine = std::string("Code de sortie GPG : ") + std::to_string(result.exitCode);
+    std::string style;
+    bool hasOutput = false;
+    if (!result.errorMessage.empty()) {
+        style.append(result.errorMessage.size(), ResultStyleStderr);
+        hasOutput = true;
+    } else if (!result.outputChunks.empty()) {
+        for (const auto& chunk : result.outputChunks) {
+            style.append(chunk.text.size(), chunk.stream == GpgOutputStream::Stderr ? ResultStyleStderr : ResultStyleNormal);
+        }
+        hasOutput = true;
+    } else if (!result.standardOutput.empty() && !result.standardError.empty()) {
+        style.append(result.standardOutput.size(), ResultStyleNormal);
+        style += ResultStyleNormal;
+        style.append(result.standardError.size(), ResultStyleStderr);
+        hasOutput = true;
+    } else if (!result.standardOutput.empty()) {
+        style.append(result.standardOutput.size(), ResultStyleNormal);
+        hasOutput = true;
+    } else if (!result.standardError.empty()) {
+        style.append(result.standardError.size(), ResultStyleStderr);
+        hasOutput = true;
+    }
+    if (hasOutput) {
+        style += ResultStyleNormal;
+    }
+    style.append(exitCodeLine.size(), ResultStyleExitCode);
+    return style;
+}
+
 std::string readableGpgError(const std::string& operation, const std::string& file, const GpgProcessResult& result) {
     std::ostringstream out;
     out << operation;
@@ -141,6 +213,14 @@ std::string readableGpgError(const std::string& operation, const std::string& fi
     }
     out << "\n" << diagnosticText(result);
     return out.str();
+}
+
+std::string removeDiagnosticSection(std::string text) {
+    auto marker = text.find("\n\nDiagnostic GPG :\n");
+    if (marker != std::string::npos) {
+        text.erase(marker);
+    }
+    return text;
 }
 
 std::string keyLabel(const GpgKey& key) {
@@ -246,6 +326,7 @@ struct SignerDisplayInfo {
     std::string name;
     std::string email;
     std::string keyId;
+    std::string signedAt;
     std::string status;
 };
 
@@ -257,6 +338,29 @@ std::vector<std::string> splitWords(const std::string& text) {
         words.push_back(word);
     }
     return words;
+}
+
+bool allDigits(const std::string& value) {
+    return !value.empty() && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+        return std::isdigit(c) != 0;
+    });
+}
+
+std::string signatureDateFromValidSigWords(const std::vector<std::string>& words) {
+    if (words.size() > 3 && allDigits(words[3])) {
+        return formatGpgTimestampDate(words[3]);
+    }
+    if (words.size() > 2) {
+        return allDigits(words[2]) ? formatGpgTimestampDate(words[2]) : words[2];
+    }
+    return {};
+}
+
+std::string signatureDateFromErrSigWords(const std::vector<std::string>& words) {
+    if (words.size() > 5 && allDigits(words[5])) {
+        return formatGpgTimestampDate(words[5]);
+    }
+    return {};
 }
 
 std::string signerStatusLabel(const std::string& status) {
@@ -312,6 +416,7 @@ std::vector<SignerDisplayInfo> signerInfoFromGpgText(const std::string& text) {
             if (signer.name.empty()) {
                 signer.name = "-";
             }
+            signer.signedAt = signatureDateFromValidSigWords(words);
             signer.status = signerStatusLabel(record);
             lastKey = key;
         } else if ((record == "ERRSIG" || record == "NO_PUBKEY") && words.size() >= 2) {
@@ -319,6 +424,9 @@ std::vector<SignerDisplayInfo> signerInfoFromGpgText(const std::string& text) {
             auto& signer = signers[keyId];
             signer.keyId = keyId;
             signer.name = "-";
+            if (record == "ERRSIG") {
+                signer.signedAt = signatureDateFromErrSigWords(words);
+            }
             signer.status = signerStatusLabel(record);
             lastKey = keyId;
         }
@@ -329,6 +437,9 @@ std::vector<SignerDisplayInfo> signerInfoFromGpgText(const std::string& text) {
         (void)key;
         if (signer.email.empty()) {
             signer.email = "-";
+        }
+        if (signer.signedAt.empty()) {
+            signer.signedAt = "-";
         }
         output.push_back(signer);
     }
@@ -701,10 +812,14 @@ void makeLabel(int x, int y, const char* text) {
     label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 }
 
-Fl_Text_Display* makeResultDisplay(int x, int y, int w, int h, Fl_Text_Buffer*& buffer) {
+Fl_Text_Display* makeResultDisplay(int x, int y, int w, int h, Fl_Text_Buffer*& buffer, Fl_Text_Buffer*& styleBuffer) {
     buffer = new Fl_Text_Buffer();
+    styleBuffer = new Fl_Text_Buffer();
     auto* display = new Fl_Text_Display(x, y, w, h);
+    display->textfont(ResultFont);
+    display->textsize(ResultFontSize);
     display->buffer(buffer);
+    display->highlight_data(styleBuffer, ResultStyleTable, 4, ResultStyleService, nullptr, nullptr);
     return display;
 }
 
@@ -778,9 +893,13 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow() {
     delete encryptResultBuffer_;
+    delete encryptResultStyleBuffer_;
     delete decryptResultBuffer_;
+    delete decryptResultStyleBuffer_;
     delete signResultBuffer_;
+    delete signResultStyleBuffer_;
     delete verifyResultBuffer_;
+    delete verifyResultStyleBuffer_;
 }
 
 void MainWindow::buildInterface() {
@@ -825,7 +944,7 @@ void MainWindow::buildInterface() {
     encryptButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Crypter");
     encryptButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeEncrypt(); }, this);
     y += RowHeight + 12;
-    makeResultDisplay(x, y, contentWidth, encryptTab_->h() - (y - encryptTab_->y()) - Margin, encryptResultBuffer_);
+    makeResultDisplay(x, y, contentWidth, encryptTab_->h() - (y - encryptTab_->y()) - Margin, encryptResultBuffer_, encryptResultStyleBuffer_);
     encryptTab_->end();
 
     decryptTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Décrypter");
@@ -848,7 +967,7 @@ void MainWindow::buildInterface() {
     decryptButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Décrypter");
     decryptButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeDecrypt(); }, this);
     y += RowHeight + 12;
-    makeResultDisplay(x, y, contentWidth, decryptTab_->h() - (y - decryptTab_->y()) - Margin, decryptResultBuffer_);
+    makeResultDisplay(x, y, contentWidth, decryptTab_->h() - (y - decryptTab_->y()) - Margin, decryptResultBuffer_, decryptResultStyleBuffer_);
     decryptTab_->end();
 
     signTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Signer");
@@ -865,7 +984,7 @@ void MainWindow::buildInterface() {
     signButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Signer");
     signButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeSign(); }, this);
     y += RowHeight + 12;
-    makeResultDisplay(x, y, contentWidth, signTab_->h() - (y - signTab_->y()) - Margin, signResultBuffer_);
+    makeResultDisplay(x, y, contentWidth, signTab_->h() - (y - signTab_->y()) - Margin, signResultBuffer_, signResultStyleBuffer_);
     signTab_->end();
 
     verifyTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Vérifier");
@@ -893,7 +1012,7 @@ void MainWindow::buildInterface() {
     verifyButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Vérifier");
     verifyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeVerify(); }, this);
     y += RowHeight + 12;
-    makeResultDisplay(x, y, contentWidth, verifyTab_->h() - (y - verifyTab_->y()) - Margin, verifyResultBuffer_);
+    makeResultDisplay(x, y, contentWidth, verifyTab_->h() - (y - verifyTab_->y()) - Margin, verifyResultBuffer_, verifyResultStyleBuffer_);
     verifyTab_->end();
 
     configurationTab_ = new Fl_Group(Margin + 4, Margin + 28, w() - Margin * 2 - 8, h() - Margin * 2 - 32, "Configuration");
@@ -919,7 +1038,7 @@ void MainWindow::buildInterface() {
     auto* testGpgButton = new Fl_Button(detectGpg->x() + detectGpg->w() + 8, y, 86, RowHeight, "Tester");
     testGpgButton->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->testGpg(); }, this);
     y += RowHeight + 22;
-    constexpr int PrivateKeysGroupHeight = 220;
+    constexpr int PrivateKeysGroupHeight = 252;
     auto* privateKeysGroup = new Fl_Group(x, y, contentWidth, PrivateKeysGroupHeight, "Mes clés privées");
     privateKeysGroup->box(FL_ENGRAVED_BOX);
     privateKeysGroup->align(FL_ALIGN_TOP | FL_ALIGN_LEFT);
@@ -951,15 +1070,18 @@ void MainWindow::buildInterface() {
         window->updateActions();
     }, this);
     groupY += 90;
-    setPreferredKeyButton_ = new Fl_Button(groupX + LabelWidth, groupY, 135, RowHeight, "Ma clé préférée");
-    setPreferredKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->setPreferredPrivateKey(); }, this);
-    auto* createKey = new Fl_Button(setPreferredKeyButton_->x() + setPreferredKeyButton_->w() + 8, groupY, 70, RowHeight, "Créer");
+    importPrivateKeyButton_ = new Fl_Button(groupX + LabelWidth, groupY, 150, RowHeight, "Importer clé privée");
+    importPrivateKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->importPrivateKey(); }, this);
+    auto* createKey = new Fl_Button(importPrivateKeyButton_->x() + importPrivateKeyButton_->w() + 8, groupY, 70, RowHeight, "Créer");
     createKey->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->createPrivateKey(); }, this);
     infoPrivateKeyButton_ = new Fl_Button(createKey->x() + createKey->w() + 8, groupY, 58, RowHeight, "Info");
     infoPrivateKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->showSelectedPrivateKeyInfo(); }, this);
     deletePrivateKeyButton_ = new Fl_Button(infoPrivateKeyButton_->x() + infoPrivateKeyButton_->w() + 8, groupY, 92, RowHeight, "Supprimer");
     deletePrivateKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->deleteSelectedPrivateKey(); }, this);
-    exportMyKeyButton_ = new Fl_Button(deletePrivateKeyButton_->x() + deletePrivateKeyButton_->w() + 8, groupY, 150, RowHeight, "Exporter clé publique");
+    groupY += RowHeight + 8;
+    setPreferredKeyButton_ = new Fl_Button(groupX + LabelWidth, groupY, 135, RowHeight, "Ma clé préférée");
+    setPreferredKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->setPreferredPrivateKey(); }, this);
+    exportMyKeyButton_ = new Fl_Button(setPreferredKeyButton_->x() + setPreferredKeyButton_->w() + 8, groupY, 150, RowHeight, "Exporter clé publique");
     exportMyKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->exportMyPublicKey(); }, this);
     exportPrivateKeyButton_ = new Fl_Button(exportMyKeyButton_->x() + exportMyKeyButton_->w() + 8, groupY, 145, RowHeight, "Exporter clé privée");
     exportPrivateKeyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->exportPrivateKey(); }, this);
@@ -1142,6 +1264,7 @@ void MainWindow::updateActions() {
     hasListedSigner ? exportMyKeyButton_->activate() : exportMyKeyButton_->deactivate();
     hasListedSigner ? exportPrivateKeyButton_->activate() : exportPrivateKeyButton_->deactivate();
     hasListedSigner ? deletePrivateKeyButton_->activate() : deletePrivateKeyButton_->deactivate();
+    gpgConfigured() ? importPrivateKeyButton_->activate() : importPrivateKeyButton_->deactivate();
     hasConfigRecipient ? exportRecipientButton_->activate() : exportRecipientButton_->deactivate();
     canDeleteConfigRecipient ? deleteRecipientButton_->activate() : deleteRecipientButton_->deactivate();
 }
@@ -1247,9 +1370,9 @@ void MainWindow::executeEncrypt() {
         std::ostringstream text;
         text << "Fichier créé : " << destination << "\nDestinataire : " << keyLabel(*recipient)
              << "\nSigné : " << (encryptSignCheck_->value() ? selectedSigningLabel() : "non");
-        setResult(encryptResultBuffer_, text.str());
+        setResult(encryptResultBuffer_, text.str(), result);
     } else {
-        setResult(encryptResultBuffer_, readableGpgError("Le fichier n'a pas pu être chiffré.", source, result));
+        setResult(encryptResultBuffer_, "Le fichier n'a pas pu être chiffré.\nFichier : " + source, result);
     }
 }
 
@@ -1297,10 +1420,10 @@ void MainWindow::executeDecrypt() {
     auto result = CryptoService(settings_.gpg.executablePath).decryptFile(source, destination);
     if (result.success()) {
         setSigners(decryptSignersBrowser_, diagnosticText(result));
-        setResult(decryptResultBuffer_, "Fichier décrypté : " + destination + "\n" + diagnosticText(result));
+        setResult(decryptResultBuffer_, "Fichier décrypté : " + destination, result);
     } else {
         setSigners(decryptSignersBrowser_, diagnosticText(result));
-        setResult(decryptResultBuffer_, readableGpgError("Le fichier n'a pas pu être décrypté.", source, result));
+        setResult(decryptResultBuffer_, "Le fichier n'a pas pu être décrypté.\nFichier : " + source, result);
     }
 }
 
@@ -1331,9 +1454,9 @@ void MainWindow::executeSign() {
     }
     auto result = SignatureService(settings_.gpg.executablePath).signFileDetached(source, signaturePath, signer->fingerprint);
     if (result.success()) {
-        setResult(signResultBuffer_, "Signature créée : " + signaturePath + "\nClé utilisée : " + keyLabel(*signer));
+        setResult(signResultBuffer_, "Signature créée : " + signaturePath + "\nClé utilisée : " + keyLabel(*signer), result);
     } else {
-        setResult(signResultBuffer_, readableGpgError("La signature n'a pas pu être créée.", source, result));
+        setResult(signResultBuffer_, "La signature n'a pas pu être créée.\nFichier : " + source, result);
     }
 }
 
@@ -1352,6 +1475,7 @@ void MainWindow::chooseVerifyFile() {
             verifySignatureInput_->value(expected.c_str());
         }
         saveSettings();
+        refreshVerifySigners();
     }
     updateActions();
 }
@@ -1369,17 +1493,31 @@ void MainWindow::chooseVerifySignature() {
         verifySignatureInput_->value(chooser.filename());
         settings_.paths.lastSignatureOpenDir = directoryOf(chooser.filename());
         saveSettings();
+        refreshVerifySigners();
     }
     updateActions();
+}
+
+void MainWindow::refreshVerifySigners() {
+    const auto source = valueOf(verifyFileInput_);
+    const auto signature = valueOf(verifySignatureInput_);
+    if (!fileExists(source) || !fileExists(signature) || !gpgConfigured()) {
+        verifySignersBrowser_->clear();
+        verifySignersBrowser_->add("Aucune signature");
+        return;
+    }
+    auto result = SignatureService(settings_.gpg.executablePath).inspectDetachedFile(signature, source);
+    setSigners(verifySignersBrowser_, diagnosticText(result));
 }
 
 void MainWindow::executeVerify() {
     const auto source = valueOf(verifyFileInput_);
     const auto signature = valueOf(verifySignatureInput_);
     auto result = SignatureService(settings_.gpg.executablePath).verifyDetachedFile(signature, source);
+    auto signersResult = SignatureService(settings_.gpg.executablePath).inspectDetachedFile(signature, source);
     auto summary = SignatureService::summarizeVerification(result);
-    setSigners(verifySignersBrowser_, diagnosticText(result));
-    setResult(verifyResultBuffer_, summary.message);
+    setSigners(verifySignersBrowser_, diagnosticText(signersResult));
+    setResult(verifyResultBuffer_, removeDiagnosticSection(summary.message), result);
 }
 
 void MainWindow::importRecipientKey() {
@@ -1456,6 +1594,35 @@ void MainWindow::exportMyPublicKey() {
     settings_.paths.lastKeyExportDir = directoryOf(chooser.filename());
     saveSettings();
     updateStatus(out ? "Ma clé publique a été exportée : " + std::string(chooser.filename()) : "Écriture impossible.");
+}
+
+void MainWindow::importPrivateKey() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Importer une clé privée");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    chooser.filter("Clés privées\t*.asc\nClés GPG\t*.gpg\nClés PGP\t*.pgp\nTous les fichiers\t*");
+    if (directoryExists(settings_.paths.lastOpenDir)) {
+        chooser.directory(settings_.paths.lastOpenDir.c_str());
+    }
+    if (chooser.show() != 0 || !chooser.filename()) {
+        return;
+    }
+    if (!confirmKeyAction("Importer une clé privée",
+                          "Importer une clé privée dans le trousseau GPG local ?",
+                          chooser.filename(),
+                          "N'importez que des clés privées dont vous connaissez l'origine.",
+                          "Importer")) {
+        return;
+    }
+    auto result = KeyStore(settings_.gpg.executablePath).importPrivateKey(chooser.filename());
+    if (result.success()) {
+        settings_.paths.lastOpenDir = directoryOf(chooser.filename());
+        saveSettings();
+        updateStatus("Clé privée importée depuis : " + std::string(chooser.filename()));
+        reloadKeys();
+    } else {
+        updateStatus(readableGpgError("La clé privée n'a pas pu être importée.", chooser.filename(), result));
+    }
 }
 
 void MainWindow::exportPrivateKey() {
@@ -1712,9 +1879,51 @@ bool MainWindow::gpgConfigured() const {
     return gpgWorks_ && !settings_.gpg.executablePath.empty();
 }
 
+Fl_Text_Buffer* MainWindow::styleBufferFor(Fl_Text_Buffer* buffer) const {
+    if (buffer == encryptResultBuffer_) {
+        return encryptResultStyleBuffer_;
+    }
+    if (buffer == decryptResultBuffer_) {
+        return decryptResultStyleBuffer_;
+    }
+    if (buffer == signResultBuffer_) {
+        return signResultStyleBuffer_;
+    }
+    if (buffer == verifyResultBuffer_) {
+        return verifyResultStyleBuffer_;
+    }
+    return nullptr;
+}
+
 void MainWindow::setResult(Fl_Text_Buffer* buffer, const std::string& text) {
     if (buffer) {
         buffer->text(text.c_str());
+        if (auto* styleBuffer = styleBufferFor(buffer)) {
+            styleBuffer->text(std::string(text.size(), ResultStyleService).c_str());
+        }
+    }
+}
+
+void MainWindow::setResult(Fl_Text_Buffer* buffer, const std::string& text, const GpgProcessResult& result) {
+    if (!buffer) {
+        return;
+    }
+
+    auto processText = chronologicalProcessText(result);
+    auto processStyle = chronologicalProcessStyle(result);
+    std::string output = text;
+    std::string style(text.size(), ResultStyleService);
+    if (!processText.empty()) {
+        if (!output.empty()) {
+            output += "\n\nSortie GPG :\n";
+            style.append(15, ResultStyleService);
+        }
+        output += processText;
+        style += processStyle;
+    }
+    buffer->text(output.c_str());
+    if (auto* styleBuffer = styleBufferFor(buffer)) {
+        styleBuffer->text(style.c_str());
     }
 }
 
@@ -1730,6 +1939,7 @@ void MainWindow::setSigners(Fl_Hold_Browser* browser, const std::string& text) {
         row << (signer.name.empty() ? "-" : signer.name) << '\t'
             << (signer.email.empty() ? "-" : signer.email) << '\t'
             << (signer.keyId.empty() ? "-" : signer.keyId) << '\t'
+            << (signer.signedAt.empty() ? "-" : signer.signedAt) << '\t'
             << (signer.status.empty() ? "Signature détectée" : signer.status);
         browser->add(row.str().c_str());
     }

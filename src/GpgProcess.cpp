@@ -6,7 +6,10 @@
 #endif
 #include <windows.h>
 
+#include <functional>
+#include <mutex>
 #include <sstream>
+#include <thread>
 
 namespace {
 std::string quoteWindowsArgument(const std::string& arg) {
@@ -37,14 +40,19 @@ std::string quoteWindowsArgument(const std::string& arg) {
     return result;
 }
 
-std::string readHandle(HANDLE handle) {
-    std::string output;
+void readHandle(HANDLE handle, GpgOutputStream stream, GpgProcessResult& result, std::mutex& mutex) {
     char buffer[4096];
     DWORD read = 0;
     while (ReadFile(handle, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
-        output.append(buffer, buffer + read);
+        std::string text(buffer, buffer + read);
+        std::lock_guard<std::mutex> lock(mutex);
+        if (stream == GpgOutputStream::Stdout) {
+            result.standardOutput += text;
+        } else {
+            result.standardError += text;
+        }
+        result.outputChunks.push_back({stream, std::move(text)});
     }
-    return output;
 }
 }
 
@@ -115,8 +123,11 @@ GpgProcessResult GpgProcess::run(const std::string& executable,
     }
     CloseHandle(inWrite);
 
-    result.standardOutput = readHandle(outRead);
-    result.standardError = readHandle(errRead);
+    std::mutex outputMutex;
+    std::thread stdoutThread(readHandle, outRead, GpgOutputStream::Stdout, std::ref(result), std::ref(outputMutex));
+    std::thread stderrThread(readHandle, errRead, GpgOutputStream::Stderr, std::ref(result), std::ref(outputMutex));
+    stdoutThread.join();
+    stderrThread.join();
     CloseHandle(outRead);
     CloseHandle(errRead);
 
@@ -240,6 +251,7 @@ GpgProcessResult GpgProcess::run(const std::string& executable,
             ssize_t count = read(stdoutPipe[0], buffer, sizeof(buffer));
             if (count > 0) {
                 result.standardOutput.append(buffer, buffer + count);
+                result.outputChunks.push_back({GpgOutputStream::Stdout, std::string(buffer, buffer + count)});
             } else {
                 stdoutOpen = false;
                 closeIfValid(stdoutPipe[0]);
@@ -250,6 +262,7 @@ GpgProcessResult GpgProcess::run(const std::string& executable,
             ssize_t count = read(stderrPipe[0], buffer, sizeof(buffer));
             if (count > 0) {
                 result.standardError.append(buffer, buffer + count);
+                result.outputChunks.push_back({GpgOutputStream::Stderr, std::string(buffer, buffer + count)});
             } else {
                 stderrOpen = false;
                 closeIfValid(stderrPipe[0]);

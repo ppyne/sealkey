@@ -31,6 +31,7 @@ public:
     std::string exportPublicKey(const std::string& fingerprint, std::string* errorText = nullptr) const;
     std::string exportSecretKey(const std::string& fingerprint, std::string* errorText = nullptr) const;
     GpgProcessResult importPublicKey(const std::string& filePath) const;
+    GpgProcessResult importPrivateKey(const std::string& filePath) const;
     GpgProcessResult deletePublicKey(const std::string& fingerprint) const;
     GpgProcessResult deleteSecretAndPublicKey(const std::string& fingerprint) const;
     GpgProcessResult generatePrivateKey(const std::string& name,

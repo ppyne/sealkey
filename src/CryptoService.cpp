@@ -104,7 +104,7 @@ std::vector<std::string> CryptoService::encryptAndSignFileArguments(const std::s
 
 std::vector<std::string> CryptoService::decryptFileArguments(const std::string& sourcePath,
                                                              const std::string& destinationPath) {
-    return {"--status-fd", "1", "--yes", "--decrypt", "--output", destinationPath, sourcePath};
+    return {"--yes", "--decrypt", "--output", destinationPath, sourcePath};
 }
 
 std::vector<std::string> CryptoService::inspectEncryptedFileArguments(const std::string& sourcePath) {

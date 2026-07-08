@@ -27,7 +27,7 @@ void runGpgArgumentTests() {
 
     auto decryptFileArgs = CryptoService::decryptFileArguments("plain.txt.asc", "plain.txt");
     assert((decryptFileArgs == std::vector<std::string>{
-                                  "--status-fd", "1", "--yes", "--decrypt", "--output", "plain.txt", "plain.txt.asc"}));
+                                  "--yes", "--decrypt", "--output", "plain.txt", "plain.txt.asc"}));
 
     auto inspectFileArgs = CryptoService::inspectEncryptedFileArguments("plain.txt.asc");
     assert(inspectFileArgs.size() == 7);
@@ -46,14 +46,17 @@ void runGpgArgumentTests() {
 
     auto signFileArgs = SignatureService::signFileDetachedArguments("plain.txt", "plain.txt.asc.sig", fingerprint);
     assert((signFileArgs == std::vector<std::string>{
-                              "--armor", "--detach-sign", "--local-user", fingerprint,
+                              "--yes", "--no-tty", "--armor", "--detach-sign", "--local-user", fingerprint,
                               "--output", "plain.txt.asc.sig", "plain.txt"}));
 
     auto verifyDetachedArgs = SignatureService::verifyDetachedFileArguments("plain.txt.asc.sig", "plain.txt");
-    assert((verifyDetachedArgs == std::vector<std::string>{"--status-fd", "1", "--verify", "plain.txt.asc.sig", "plain.txt"}));
+    assert((verifyDetachedArgs == std::vector<std::string>{"--verify", "plain.txt.asc.sig", "plain.txt"}));
+
+    auto inspectDetachedArgs = SignatureService::inspectDetachedFileArguments("plain.txt.asc.sig", "plain.txt");
+    assert((inspectDetachedArgs == std::vector<std::string>{"--status-fd", "1", "--verify", "plain.txt.asc.sig", "plain.txt"}));
 
     auto verifySignedArgs = SignatureService::verifySignedFileArguments("signed.asc");
-    assert((verifySignedArgs == std::vector<std::string>{"--status-fd", "1", "--verify", "signed.asc"}));
+    assert((verifySignedArgs == std::vector<std::string>{"--verify", "signed.asc"}));
 
     auto generateKeyArgs = KeyStore::generatePrivateKeyArguments("Alice Example <alice@example.test>", "1y", "default");
     assert((generateKeyArgs == std::vector<std::string>{
