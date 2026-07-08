@@ -13,6 +13,10 @@
 #endif
 
 namespace {
+constexpr unsigned char SelectionRed = 166;
+constexpr unsigned char SelectionGreen = 202;
+constexpr unsigned char SelectionBlue = 240;
+
 #if defined(__linux__)
 std::filesystem::path installedIconPathFromExecutable(const char* executable) {
     if (!executable || !*executable) {
@@ -53,12 +57,19 @@ void configureLinuxWindowIcon(const char* executable) {
 #else
 void configureLinuxWindowIcon(const char*) {}
 #endif
+
+void configureSelectionColor() {
+    Fl::set_color(FL_SELECTION_COLOR, SelectionRed, SelectionGreen, SelectionBlue);
+}
 }
 
 int main(int argc, char** argv) {
     Fl_Window::default_xclass(AppInfo::ProjectId);
+    configureSelectionColor();
     configureLinuxWindowIcon(argc > 0 ? argv[0] : nullptr);
     auto window = new MainWindow();
     window->show(argc, argv);
+    configureSelectionColor();
+    window->redraw();
     return Fl::run();
 }
