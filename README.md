@@ -1,4 +1,4 @@
-![SealKey](icons/linux_icons/sealkey_128x128.png "SealKey").
+![SealKey](icons/linux_icons/sealkey_128x128.png "SealKey")
 
 # SealKey
 
