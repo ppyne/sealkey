@@ -177,6 +177,8 @@ Pour un rendu plus moderne avec FLTK 1.4 et le backend Wayland/Cairo/Pango, inst
 sudo apt install libpango1.0-dev libcairo2-dev libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev libxfixes-dev libxcursor-dev libxinerama-dev
 ```
 
+SealKey n'utilise pas OpenGL. Quand `USE_SYSTEM_FLTK=OFF`, le build désactive donc `FLTK_BUILD_GL` pour éviter les dépendances EGL/OpenGL inutiles du backend Wayland.
+
 Pour utiliser une installation FLTK déjà disponible sur le système :
 
 ```bash
