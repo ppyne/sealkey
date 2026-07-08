@@ -66,6 +66,10 @@ private:
     void savePrivateKeyColumnWidths();
     void loadRecipientKeyColumnWidths();
     void saveRecipientKeyColumnWidths();
+    void loadEncryptRecipientColumnWidths();
+    void saveEncryptRecipientColumnWidths();
+    void loadSignerColumnWidths();
+    void saveSignerColumnWidths();
 
     const GpgKey* selectedEncryptRecipientKey() const;
     const GpgKey* selectedConfigRecipientKey() const;
@@ -99,14 +103,18 @@ private:
     Fl_Group* configurationTab_ = nullptr;
 
     Fl_Input* encryptFileInput_ = nullptr;
+    Fl_Widget* encryptRecipientHeader_ = nullptr;
     Fl_Hold_Browser* encryptRecipientBrowser_ = nullptr;
+    std::array<int, 7> encryptRecipientColumnWidths_ = {110, 155, 85, 285, 70, 85, 0};
     Fl_Check_Button* encryptSignCheck_ = nullptr;
     Fl_Button* encryptButton_ = nullptr;
     Fl_Text_Buffer* encryptResultBuffer_ = nullptr;
     Fl_Text_Buffer* encryptResultStyleBuffer_ = nullptr;
 
     Fl_Input* decryptFileInput_ = nullptr;
+    Fl_Widget* decryptSignersHeader_ = nullptr;
     Fl_Hold_Browser* decryptSignersBrowser_ = nullptr;
+    std::array<int, 6> signerColumnWidths_ = {180, 180, 160, 100, 150, 0};
     Fl_Button* decryptButton_ = nullptr;
     Fl_Text_Buffer* decryptResultBuffer_ = nullptr;
     Fl_Text_Buffer* decryptResultStyleBuffer_ = nullptr;
@@ -118,6 +126,7 @@ private:
 
     Fl_Input* verifyFileInput_ = nullptr;
     Fl_Input* verifySignatureInput_ = nullptr;
+    Fl_Widget* verifySignersHeader_ = nullptr;
     Fl_Hold_Browser* verifySignersBrowser_ = nullptr;
     Fl_Button* verifyButton_ = nullptr;
     Fl_Text_Buffer* verifyResultBuffer_ = nullptr;

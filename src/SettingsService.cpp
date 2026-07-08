@@ -64,6 +64,9 @@ AppSettings SettingsService::load() const {
     settings.options.signatureFileExtension = ini.getString("options", "signature_file_extension", settings.options.signatureFileExtension);
     settings.options.privateKeyColumnWidths = ini.getString("options", "private_key_column_widths", settings.options.privateKeyColumnWidths);
     settings.options.recipientKeyColumnWidths = ini.getString("options", "recipient_key_column_widths", settings.options.recipientKeyColumnWidths);
+    settings.options.encryptRecipientColumnWidths =
+        ini.getString("options", "encrypt_recipient_column_widths", settings.options.encryptRecipientColumnWidths);
+    settings.options.signerColumnWidths = ini.getString("options", "signer_column_widths", settings.options.signerColumnWidths);
     return settings;
 }
 
@@ -100,6 +103,8 @@ bool SettingsService::save(const AppSettings& settings) const {
     ini.set("options", "signature_file_extension", settings.options.signatureFileExtension);
     ini.set("options", "private_key_column_widths", settings.options.privateKeyColumnWidths);
     ini.set("options", "recipient_key_column_widths", settings.options.recipientKeyColumnWidths);
+    ini.set("options", "encrypt_recipient_column_widths", settings.options.encryptRecipientColumnWidths);
+    ini.set("options", "signer_column_widths", settings.options.signerColumnWidths);
 
     auto target = preferencesFile();
     auto temp = target;

@@ -37,6 +37,8 @@ struct OptionSettings {
     std::string signatureFileExtension = "sig";
     std::string privateKeyColumnWidths = "110,155,85,285,70,85";
     std::string recipientKeyColumnWidths = "110,155,85,285,70,85";
+    std::string encryptRecipientColumnWidths = "110,155,85,285,70,85";
+    std::string signerColumnWidths = "180,180,160,100,150";
 };
 
 struct AppSettings {

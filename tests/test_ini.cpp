@@ -44,6 +44,8 @@ void testSettingsDefaults() {
     assert(settings.options.signatureFileExtension == "sig");
     assert(settings.options.privateKeyColumnWidths == "110,155,85,285,70,85");
     assert(settings.options.recipientKeyColumnWidths == "110,155,85,285,70,85");
+    assert(settings.options.encryptRecipientColumnWidths == "110,155,85,285,70,85");
+    assert(settings.options.signerColumnWidths == "180,180,160,100,150");
     settings.gpg.executablePath = "/usr/bin/gpg";
     settings.keys.signingFingerprint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     assert(settings.gpg.executablePath == "/usr/bin/gpg");

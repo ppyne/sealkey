@@ -145,6 +145,7 @@ La version 0.6.1 fournit :
 - l'affichage des signataires avec date de signature formatée quand GPG la fournit;
 - l'affichage chronologique des sorties GPG dans les onglets d'opération, en police monospace, avec messages SealKey en bleu, stdout en noir, stderr en rouge et code de sortie GPG final en magenta;
 - la séparation des sorties utilisateur de GPG et du flux technique `--status-fd` utilisé en interne pour identifier les signataires;
+- des listes tabulaires avec en-têtes et colonnes redimensionnables, dont les largeurs sont mémorisées;
 - la restauration du dernier onglet et de la géométrie de fenêtre;
 - des icônes Windows, macOS et Linux, avec intégration Linux via fichier `.desktop`.
 

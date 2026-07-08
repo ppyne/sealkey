@@ -16,11 +16,13 @@
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Group.H>
 #include <FL/Fl_Hold_Browser.H>
+#include <FL/Fl_Image.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Int_Input.H>
 #include <FL/Fl_Multiline_Output.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/Fl_Output.H>
+#include <FL/Fl_PNG_Image.H>
 #include <FL/Fl_Tabs.H>
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Text_Display.H>
@@ -28,33 +30,56 @@
 #include <FL/fl_ask.H>
 #include <FL/fl_draw.H>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <ctime>
 #include <utility>
+#include <vector>
+
+#ifndef SEALKEY_OBJECT_ICONS_SOURCE_DIR
+#define SEALKEY_OBJECT_ICONS_SOURCE_DIR ""
+#endif
+
+#ifndef SEALKEY_OBJECT_ICONS_INSTALLED_DIR
+#define SEALKEY_OBJECT_ICONS_INSTALLED_DIR ""
+#endif
 
 namespace {
 constexpr int Margin = 14;
 constexpr int RowHeight = 28;
 constexpr int LabelWidth = 190;
 constexpr int ButtonWidth = 92;
-constexpr int PrivateKeyColumnCount = 6;
-constexpr int MinPrivateKeyColumnWidth = 45;
-int SignerColumnWidths[] = {180, 180, 160, 100, 150, 0};
+constexpr int KeyColumnCount = 6;
+constexpr int SignerColumnCount = 5;
+constexpr int MinColumnWidth = 45;
 constexpr char ResultStyleService = 'A';
 constexpr char ResultStyleNormal = 'B';
 constexpr char ResultStyleStderr = 'C';
 constexpr char ResultStyleExitCode = 'D';
 constexpr Fl_Font ResultFont = FL_COURIER;
 constexpr Fl_Fontsize ResultFontSize = 12;
+constexpr int ListIconSize = 18;
 
 const Fl_Text_Display::Style_Table_Entry ResultStyleTable[] = {
     {FL_BLUE, ResultFont, ResultFontSize, 0, 0},
@@ -77,6 +102,120 @@ std::string trim(std::string value) {
                 }).base(),
                 value.end());
     return value;
+}
+
+enum class SignerStatusIcon : std::intptr_t {
+    None = 0,
+    Good = 1,
+    Bad = 2,
+};
+
+std::vector<std::filesystem::path> objectIconDirectories();
+
+std::filesystem::path objectIconPath(const std::string& fileName) {
+    for (const auto& directory : objectIconDirectories()) {
+        if (directory.empty()) {
+            continue;
+        }
+        std::error_code ec;
+        auto path = directory / fileName;
+        if (std::filesystem::is_regular_file(path, ec)) {
+            return path;
+        }
+    }
+    return {};
+}
+
+std::unique_ptr<Fl_Image> loadListIcon(const std::string& baseName) {
+    auto path = objectIconPath(baseName + "_32.png");
+    if (path.empty()) {
+        path = objectIconPath(baseName + "_24.png");
+    }
+    if (path.empty()) {
+        path = objectIconPath(baseName + "_16.png");
+    }
+    if (path.empty()) {
+        return nullptr;
+    }
+
+    auto image = std::make_unique<Fl_PNG_Image>(path.string().c_str());
+    if (image->w() <= 0 || image->h() <= 0) {
+        return nullptr;
+    }
+    image->scale(ListIconSize, ListIconSize, 1, 1);
+    return image;
+}
+
+struct ListIcons {
+    std::unique_ptr<Fl_Image> publicKey = loadListIcon("key");
+    std::unique_ptr<Fl_Image> privateKey = loadListIcon("key-private");
+    std::unique_ptr<Fl_Image> seal = loadListIcon("seal");
+    std::unique_ptr<Fl_Image> good = loadListIcon("good");
+    std::unique_ptr<Fl_Image> bad = loadListIcon("bad");
+};
+
+ListIcons& listIcons() {
+    static ListIcons icons;
+    return icons;
+}
+
+void setLastLineIcon(Fl_Hold_Browser* browser, Fl_Image* image) {
+    if (browser && image && browser->size() > 0) {
+        browser->icon(browser->size(), image);
+    }
+}
+
+std::filesystem::path executablePath() {
+#if defined(__APPLE__)
+    std::vector<char> buffer(1024);
+    uint32_t size = static_cast<uint32_t>(buffer.size());
+    if (_NSGetExecutablePath(buffer.data(), &size) != 0) {
+        buffer.resize(size);
+        if (_NSGetExecutablePath(buffer.data(), &size) != 0) {
+            return {};
+        }
+    }
+    std::error_code ec;
+    return std::filesystem::weakly_canonical(buffer.data(), ec);
+#elif defined(_WIN32)
+    std::vector<char> buffer(MAX_PATH);
+    DWORD size = GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    while (size == buffer.size()) {
+        buffer.resize(buffer.size() * 2);
+        size = GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    }
+    if (size == 0) {
+        return {};
+    }
+    return std::filesystem::path(std::string(buffer.data(), size));
+#elif defined(__linux__)
+    std::vector<char> buffer(4096);
+    auto size = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+    if (size <= 0) {
+        return {};
+    }
+    buffer[static_cast<std::size_t>(size)] = '\0';
+    return std::filesystem::path(buffer.data());
+#else
+    return {};
+#endif
+}
+
+std::vector<std::filesystem::path> objectIconDirectories() {
+    std::vector<std::filesystem::path> directories;
+    auto executable = executablePath();
+    if (!executable.empty()) {
+        auto executableDirectory = executable.parent_path();
+        directories.push_back(executableDirectory / "icons" / "objets");
+#if defined(__APPLE__)
+        directories.push_back(executableDirectory.parent_path() / "Resources" / "icons" / "objets");
+#endif
+    }
+    directories.emplace_back(SEALKEY_OBJECT_ICONS_SOURCE_DIR);
+    directories.emplace_back(SEALKEY_OBJECT_ICONS_INSTALLED_DIR);
+    directories.push_back(std::filesystem::current_path() / "icons" / "objets");
+    directories.push_back(std::filesystem::current_path() / "Contents" / "Resources" / "icons" / "objets");
+    return directories;
 }
 
 bool validEmail(const std::string& email) {
@@ -379,6 +518,10 @@ std::string signerStatusLabel(const std::string& status) {
     return status.empty() ? "Signature détectée" : status;
 }
 
+SignerStatusIcon signerStatusIcon(const std::string& status) {
+    return status == "Signature valide" ? SignerStatusIcon::Good : SignerStatusIcon::Bad;
+}
+
 std::vector<SignerDisplayInfo> signerInfoFromGpgText(const std::string& text) {
     std::map<std::string, SignerDisplayInfo> signers;
     std::string lastKey;
@@ -457,21 +600,21 @@ std::string serializeColumnWidths(const int* widths, int count) {
     return output.str();
 }
 
-void parseColumnWidths(const std::string& text, std::array<int, 7>& widths) {
+void parseColumnWidths(const std::string& text, int* widths, int count) {
     std::istringstream input(text);
     std::string item;
     int index = 0;
-    while (index < PrivateKeyColumnCount && std::getline(input, item, ',')) {
+    while (index < count && std::getline(input, item, ',')) {
         try {
             int value = std::stoi(trim(item));
-            if (value >= MinPrivateKeyColumnWidth && value <= 800) {
+            if (value >= MinColumnWidth && value <= 800) {
                 widths[index] = value;
             }
         } catch (...) {
         }
         ++index;
     }
-    widths[PrivateKeyColumnCount] = 0;
+    widths[count] = 0;
 }
 
 class ColumnHeader : public Fl_Widget {
@@ -480,11 +623,13 @@ public:
                  int y,
                  int w,
                  int h,
-                 std::array<int, 7>& widths,
+                 int* widths,
+                 int columnCount,
                  std::vector<std::string> labels,
                  std::function<void()> onResize)
         : Fl_Widget(x, y, w, h),
           widths_(widths),
+          columnCount_(columnCount),
           labels_(std::move(labels)),
           onResize_(std::move(onResize)) {}
 
@@ -496,12 +641,12 @@ public:
         fl_rect(x(), y(), w(), h());
 
         int currentX = x();
-        for (int i = 0; i < PrivateKeyColumnCount; ++i) {
+        for (int i = 0; i < columnCount_; ++i) {
             fl_color(FL_BLACK);
             fl_font(FL_HELVETICA_BOLD, 12);
-            fl_draw(labels_[static_cast<std::size_t>(i)].c_str(), currentX + 4, y(), widths_[static_cast<std::size_t>(i)] - 8, h(),
+            fl_draw(labels_[static_cast<std::size_t>(i)].c_str(), currentX + 4, y(), widths_[i] - 8, h(),
                     FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-            currentX += widths_[static_cast<std::size_t>(i)];
+            currentX += widths_[i];
             fl_color(FL_DARK3);
             fl_line(currentX, y(), currentX, y() + h());
         }
@@ -543,11 +688,11 @@ public:
 private:
     int columnBoundaryNear(int eventX) const {
         if (std::abs(eventX - (x() + w())) <= 5) {
-            return PrivateKeyColumnCount - 1;
+            return columnCount_ - 1;
         }
         int boundary = x();
-        for (int i = 0; i < PrivateKeyColumnCount; ++i) {
-            boundary += widths_[static_cast<std::size_t>(i)];
+        for (int i = 0; i < columnCount_; ++i) {
+            boundary += widths_[i];
             if (std::abs(eventX - boundary) <= 5) {
                 return i;
             }
@@ -559,9 +704,9 @@ private:
         if (delta == 0 || dragColumn_ < 0) {
             return;
         }
-        auto left = static_cast<std::size_t>(dragColumn_);
-        if (dragColumn_ == PrivateKeyColumnCount - 1) {
-            if (widths_[left] + delta < MinPrivateKeyColumnWidth || widths_[left] + delta > 800) {
+        auto left = dragColumn_;
+        if (dragColumn_ == columnCount_ - 1) {
+            if (widths_[left] + delta < MinColumnWidth || widths_[left] + delta > 800) {
                 return;
             }
             widths_[left] += delta;
@@ -571,9 +716,9 @@ private:
             }
             return;
         }
-        auto right = static_cast<std::size_t>(dragColumn_ + 1);
-        if (widths_[left] + delta < MinPrivateKeyColumnWidth ||
-            widths_[right] - delta < MinPrivateKeyColumnWidth) {
+        auto right = dragColumn_ + 1;
+        if (widths_[left] + delta < MinColumnWidth ||
+            widths_[right] - delta < MinColumnWidth) {
             return;
         }
         widths_[left] += delta;
@@ -596,11 +741,93 @@ private:
         }
     }
 
-    std::array<int, 7>& widths_;
+    int* widths_ = nullptr;
+    int columnCount_ = 0;
     std::vector<std::string> labels_;
     std::function<void()> onResize_;
     int dragColumn_ = -1;
     int lastX_ = 0;
+};
+
+class SignerBrowser : public Fl_Hold_Browser {
+public:
+    SignerBrowser(int x, int y, int w, int h)
+        : Fl_Hold_Browser(x, y, w, h) {}
+
+protected:
+    int item_height(void* item) const override {
+        return std::max(Fl_Hold_Browser::item_height(item), ListIconSize + 4);
+    }
+
+    void item_draw(void* item, int x, int y, int w, int h) const override {
+        const char* text = item_text(item);
+        if (!text) {
+            return;
+        }
+
+        auto columns = splitTabs(text);
+        const int* widths = column_widths();
+        const bool selected = item_selected(item) != 0;
+        const auto normalColor = selected ? fl_contrast(textcolor(), selection_color()) : textcolor();
+        const int line = lineno(item);
+        const auto statusIcon =
+            static_cast<SignerStatusIcon>(reinterpret_cast<std::intptr_t>(data(line)));
+
+        fl_font(textfont(), textsize());
+        int currentX = x;
+        int remainingW = w;
+        for (std::size_t index = 0; index < columns.size() && remainingW > 6; ++index) {
+            int columnW = remainingW;
+            if (widths && widths[index] > 0) {
+                columnW = widths[index];
+            }
+
+            fl_push_clip(currentX, y, columnW, h);
+            int textX = currentX + 3;
+            if (index == 0 && statusIcon != SignerStatusIcon::None) {
+                if (auto* icon = listIcons().seal.get()) {
+                    icon->draw(currentX + 4, y + (h - icon->h()) / 2);
+                    textX += icon->w() + 7;
+                }
+            } else if (index == 4) {
+                Fl_Image* icon = nullptr;
+                if (statusIcon == SignerStatusIcon::Good) {
+                    icon = listIcons().good.get();
+                } else if (statusIcon == SignerStatusIcon::Bad) {
+                    icon = listIcons().bad.get();
+                }
+                if (icon) {
+                    icon->draw(currentX + 4, y + (h - icon->h()) / 2);
+                    textX += icon->w() + 7;
+                }
+            }
+
+            fl_color(active_r() ? normalColor : fl_inactive(normalColor));
+            fl_draw(columns[index].c_str(), textX, y, std::max(0, currentX + columnW - textX - 3), h,
+                    FL_ALIGN_LEFT | FL_ALIGN_CLIP);
+            fl_pop_clip();
+
+            currentX += columnW;
+            remainingW -= columnW;
+            if (!widths || widths[index] == 0) {
+                break;
+            }
+        }
+    }
+
+private:
+    static std::vector<std::string> splitTabs(const char* text) {
+        std::vector<std::string> columns;
+        std::istringstream input(text);
+        std::string item;
+        while (std::getline(input, item, '\t')) {
+            columns.push_back(item);
+        }
+        if (columns.empty()) {
+            columns.emplace_back();
+        }
+        return columns;
+    }
 };
 
 std::string publicExportFileName(const GpgKey& key) {
@@ -882,6 +1109,8 @@ MainWindow::MainWindow()
         SealKeyPaths::normalizeExtension(settings_.options.signatureFileExtension, "sig");
     loadPrivateKeyColumnWidths();
     loadRecipientKeyColumnWidths();
+    loadEncryptRecipientColumnWidths();
+    loadSignerColumnWidths();
     resize(settings_.window.x >= 0 ? settings_.window.x : x(),
            settings_.window.y >= 0 ? settings_.window.y : y(),
            settings_.window.width,
@@ -922,7 +1151,24 @@ void MainWindow::buildInterface() {
     chooseEncrypt->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseEncryptFile(); }, this);
     y += RowHeight + 12;
     makeLabel(x, y, "Destinataire");
-    encryptRecipientBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 150);
+    encryptRecipientHeader_ = new ColumnHeader(x + LabelWidth,
+                                               y,
+                                               contentWidth - LabelWidth,
+                                               18,
+                                               encryptRecipientColumnWidths_.data(),
+                                               KeyColumnCount,
+                                               {"Nom", "Email", "Court", "Fingerprint", "Cap.", "Expiration"},
+                                               [this]() {
+                                                   if (encryptRecipientBrowser_) {
+                                                       encryptRecipientBrowser_->column_widths(encryptRecipientColumnWidths_.data());
+                                                       encryptRecipientBrowser_->redraw();
+                                                   }
+                                                   saveEncryptRecipientColumnWidths();
+                                               });
+    y += 20;
+    encryptRecipientBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 130);
+    encryptRecipientBrowser_->column_char('\t');
+    encryptRecipientBrowser_->column_widths(encryptRecipientColumnWidths_.data());
     encryptRecipientBrowser_->callback([](Fl_Widget*, void* data) {
         auto* window = static_cast<MainWindow*>(data);
         if (auto* key = window->selectedEncryptRecipientKey()) {
@@ -932,8 +1178,8 @@ void MainWindow::buildInterface() {
         }
         window->updateActions();
     }, this);
-    y += 162;
-    encryptSignCheck_ = new Fl_Check_Button(x + LabelWidth, y, 220, RowHeight, "Signer avec ma clé");
+    y += 142;
+    encryptSignCheck_ = new Fl_Check_Button(x + LabelWidth, y, 250, RowHeight, "Signer avec ma clé préférée");
     encryptSignCheck_->callback([](Fl_Widget*, void* data) {
         auto* window = static_cast<MainWindow*>(data);
         window->settings_.options.encryptAndSign = window->encryptSignCheck_->value() != 0;
@@ -959,11 +1205,33 @@ void MainWindow::buildInterface() {
     chooseDecrypt->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseDecryptFile(); }, this);
     y += RowHeight + 12;
     makeLabel(x, y, "Signataires");
-    decryptSignersBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 120);
+    decryptSignersHeader_ = new ColumnHeader(x + LabelWidth,
+                                             y,
+                                             contentWidth - LabelWidth,
+                                             18,
+                                             signerColumnWidths_.data(),
+                                             SignerColumnCount,
+                                             {"Nom", "Email", "Fingerprint", "Date", "Statut"},
+                                             [this]() {
+                                                 if (decryptSignersBrowser_) {
+                                                     decryptSignersBrowser_->column_widths(signerColumnWidths_.data());
+                                                     decryptSignersBrowser_->redraw();
+                                                 }
+                                                 if (verifySignersBrowser_) {
+                                                     verifySignersBrowser_->column_widths(signerColumnWidths_.data());
+                                                     verifySignersBrowser_->redraw();
+                                                 }
+                                                 if (verifySignersHeader_) {
+                                                     verifySignersHeader_->redraw();
+                                                 }
+                                                 saveSignerColumnWidths();
+                                             });
+    y += 20;
+    decryptSignersBrowser_ = new SignerBrowser(x + LabelWidth, y, contentWidth - LabelWidth, 100);
     decryptSignersBrowser_->column_char('\t');
-    decryptSignersBrowser_->column_widths(SignerColumnWidths);
+    decryptSignersBrowser_->column_widths(signerColumnWidths_.data());
     decryptSignersBrowser_->add("Aucune signature");
-    y += 132;
+    y += 112;
     decryptButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Décrypter");
     decryptButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeDecrypt(); }, this);
     y += RowHeight + 12;
@@ -1005,10 +1273,33 @@ void MainWindow::buildInterface() {
     chooseVerifySig->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->chooseVerifySignature(); }, this);
     y += RowHeight + 12;
     makeLabel(x, y, "Signataires");
-    verifySignersBrowser_ = new Fl_Hold_Browser(x + LabelWidth, y, contentWidth - LabelWidth, 110);
+    verifySignersHeader_ = new ColumnHeader(x + LabelWidth,
+                                            y,
+                                            contentWidth - LabelWidth,
+                                            18,
+                                            signerColumnWidths_.data(),
+                                            SignerColumnCount,
+                                            {"Nom", "Email", "Fingerprint", "Date", "Statut"},
+                                            [this]() {
+                                                if (verifySignersBrowser_) {
+                                                    verifySignersBrowser_->column_widths(signerColumnWidths_.data());
+                                                    verifySignersBrowser_->redraw();
+                                                }
+                                                if (decryptSignersBrowser_) {
+                                                    decryptSignersBrowser_->column_widths(signerColumnWidths_.data());
+                                                    decryptSignersBrowser_->redraw();
+                                                }
+                                                if (decryptSignersHeader_) {
+                                                    decryptSignersHeader_->redraw();
+                                                }
+                                                saveSignerColumnWidths();
+                                            });
+    y += 20;
+    verifySignersBrowser_ = new SignerBrowser(x + LabelWidth, y, contentWidth - LabelWidth, 90);
     verifySignersBrowser_->column_char('\t');
-    verifySignersBrowser_->column_widths(SignerColumnWidths);
-    y += 122;
+    verifySignersBrowser_->column_widths(signerColumnWidths_.data());
+    verifySignersBrowser_->add("Aucune signature");
+    y += 102;
     verifyButton_ = new Fl_Button(x + LabelWidth, y, 130, RowHeight, "Vérifier");
     verifyButton_->callback([](Fl_Widget*, void* data) { static_cast<MainWindow*>(data)->executeVerify(); }, this);
     y += RowHeight + 12;
@@ -1052,7 +1343,8 @@ void MainWindow::buildInterface() {
                                          groupY,
                                          groupWidth - LabelWidth,
                                          18,
-                                         privateKeyColumnWidths_,
+                                         privateKeyColumnWidths_.data(),
+                                         KeyColumnCount,
                                          {"Nom", "Email", "Court", "Fingerprint", "Cap.", "Expiration"},
                                          [this]() {
                                              if (myKeyBrowser_) {
@@ -1106,7 +1398,8 @@ void MainWindow::buildInterface() {
                                            groupY,
                                            groupWidth - LabelWidth,
                                            18,
-                                           recipientKeyColumnWidths_,
+                                           recipientKeyColumnWidths_.data(),
+                                           KeyColumnCount,
                                            {"Nom", "Email", "Court", "Fingerprint", "Cap.", "Expiration"},
                                            [this]() {
                                                if (recipientsBrowser_) {
@@ -1216,12 +1509,14 @@ void MainWindow::populateKeyBrowsers() {
     recipientsBrowser_->clear();
     myKeyBrowser_->clear();
     for (const auto& key : recipientKeys_) {
-        const auto label = keyLabel(key);
-        encryptRecipientBrowser_->add(label.c_str());
+        encryptRecipientBrowser_->add(recipientKeyColumnLabel(key).c_str());
+        setLastLineIcon(encryptRecipientBrowser_, listIcons().publicKey.get());
         recipientsBrowser_->add(recipientKeyColumnLabel(key).c_str());
+        setLastLineIcon(recipientsBrowser_, listIcons().publicKey.get());
     }
     for (const auto& key : signingKeys_) {
         myKeyBrowser_->add(privateKeyColumnLabel(key).c_str());
+        setLastLineIcon(myKeyBrowser_, listIcons().privateKey.get());
     }
 }
 
@@ -1823,22 +2118,42 @@ void MainWindow::normalizeAndSaveSignatureExtension() {
 }
 
 void MainWindow::loadPrivateKeyColumnWidths() {
-    parseColumnWidths(settings_.options.privateKeyColumnWidths, privateKeyColumnWidths_);
+    parseColumnWidths(settings_.options.privateKeyColumnWidths, privateKeyColumnWidths_.data(), KeyColumnCount);
 }
 
 void MainWindow::savePrivateKeyColumnWidths() {
     settings_.options.privateKeyColumnWidths =
-        serializeColumnWidths(privateKeyColumnWidths_.data(), PrivateKeyColumnCount);
+        serializeColumnWidths(privateKeyColumnWidths_.data(), KeyColumnCount);
     saveSettings();
 }
 
 void MainWindow::loadRecipientKeyColumnWidths() {
-    parseColumnWidths(settings_.options.recipientKeyColumnWidths, recipientKeyColumnWidths_);
+    parseColumnWidths(settings_.options.recipientKeyColumnWidths, recipientKeyColumnWidths_.data(), KeyColumnCount);
 }
 
 void MainWindow::saveRecipientKeyColumnWidths() {
     settings_.options.recipientKeyColumnWidths =
-        serializeColumnWidths(recipientKeyColumnWidths_.data(), PrivateKeyColumnCount);
+        serializeColumnWidths(recipientKeyColumnWidths_.data(), KeyColumnCount);
+    saveSettings();
+}
+
+void MainWindow::loadEncryptRecipientColumnWidths() {
+    parseColumnWidths(settings_.options.encryptRecipientColumnWidths, encryptRecipientColumnWidths_.data(), KeyColumnCount);
+}
+
+void MainWindow::saveEncryptRecipientColumnWidths() {
+    settings_.options.encryptRecipientColumnWidths =
+        serializeColumnWidths(encryptRecipientColumnWidths_.data(), KeyColumnCount);
+    saveSettings();
+}
+
+void MainWindow::loadSignerColumnWidths() {
+    parseColumnWidths(settings_.options.signerColumnWidths, signerColumnWidths_.data(), SignerColumnCount);
+}
+
+void MainWindow::saveSignerColumnWidths() {
+    settings_.options.signerColumnWidths =
+        serializeColumnWidths(signerColumnWidths_.data(), SignerColumnCount);
     saveSettings();
 }
 
@@ -1941,7 +2256,8 @@ void MainWindow::setSigners(Fl_Hold_Browser* browser, const std::string& text) {
             << (signer.keyId.empty() ? "-" : signer.keyId) << '\t'
             << (signer.signedAt.empty() ? "-" : signer.signedAt) << '\t'
             << (signer.status.empty() ? "Signature détectée" : signer.status);
-        browser->add(row.str().c_str());
+        const auto status = signer.status.empty() ? "Signature détectée" : signer.status;
+        browser->add(row.str().c_str(), reinterpret_cast<void*>(static_cast<std::intptr_t>(signerStatusIcon(status))));
     }
 }
 

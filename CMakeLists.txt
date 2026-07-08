@@ -95,6 +95,10 @@ if(BUILD_GUI)
 
     target_include_directories(sealkey PRIVATE include)
     target_link_libraries(sealkey PRIVATE sealkey_core)
+    target_compile_definitions(sealkey PRIVATE
+        SEALKEY_OBJECT_ICONS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/icons/objets"
+        SEALKEY_OBJECT_ICONS_INSTALLED_DIR="${CMAKE_INSTALL_FULL_DATADIR}/sealkey/icons/objets"
+    )
 
     if(UNIX AND NOT APPLE)
         target_compile_definitions(sealkey PRIVATE
@@ -112,16 +116,14 @@ if(BUILD_GUI)
         target_link_libraries(sealkey PRIVATE ${FLTK_LIBRARIES})
     endif()
 
-    if(UNIX AND NOT APPLE)
-        if(TARGET fltk::images)
-            target_link_libraries(sealkey PRIVATE fltk::images)
-        elseif(TARGET fltk_images)
-            target_link_libraries(sealkey PRIVATE fltk_images)
-        elseif(FLTK_IMAGES_LIBRARIES)
-            target_link_libraries(sealkey PRIVATE ${FLTK_IMAGES_LIBRARIES})
-        elseif(FLTK_IMAGES_LIBRARY)
-            target_link_libraries(sealkey PRIVATE ${FLTK_IMAGES_LIBRARY})
-        endif()
+    if(TARGET fltk::images)
+        target_link_libraries(sealkey PRIVATE fltk::images)
+    elseif(TARGET fltk_images)
+        target_link_libraries(sealkey PRIVATE fltk_images)
+    elseif(FLTK_IMAGES_LIBRARIES)
+        target_link_libraries(sealkey PRIVATE ${FLTK_IMAGES_LIBRARIES})
+    elseif(FLTK_IMAGES_LIBRARY)
+        target_link_libraries(sealkey PRIVATE ${FLTK_IMAGES_LIBRARY})
     endif()
 
     if(MSVC)
@@ -169,6 +171,26 @@ if(BUILD_GUI)
             RENAME sealkey.png
         )
     endif()
+
+    if(APPLE)
+        add_custom_command(TARGET sealkey POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/icons/objets"
+                    "$<TARGET_BUNDLE_DIR:sealkey>/Contents/Resources/icons/objets"
+            VERBATIM
+        )
+    else()
+        add_custom_command(TARGET sealkey POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/icons/objets"
+                    "$<TARGET_FILE_DIR:sealkey>/icons/objets"
+            VERBATIM
+        )
+    endif()
+
+    install(DIRECTORY icons/objets
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/sealkey/icons
+    )
 endif()
 
 if(ENABLE_TESTS)
